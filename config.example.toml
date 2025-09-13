@@ -1,0 +1,21 @@
+# Example configuration for EnteServer
+
+jwt_secret = "dev-secret"
+admin_email = "admin@example.com"
+admin_password = "changeme"
+database_url = "sqlite:///./ente.db"
+
+[s3]
+enabled = true
+endpoint_url = "http://localhost:9000"
+region = "us-east-1"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+use_path_style = true
+presign_expiry = 3600
+
+[s3.backends.main]
+bucket = "app-main"
+
+[s3.backends.backup]
+bucket = "app-backup"

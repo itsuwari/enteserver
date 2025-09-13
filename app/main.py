@@ -61,8 +61,9 @@ def healthz():
     try:
         if settings.s3_enabled:
             client = s3mod._client()
-            # try listing bucket (lightweight)
-            client.list_objects_v2(Bucket=settings.s3_bucket, MaxKeys=1)
+            bucket = s3mod._bucket()
+            if bucket:
+                client.list_objects_v2(Bucket=bucket, MaxKeys=1)
             s3_status = "ok"
     except Exception as e:
         s3_status = f"error: {type(e).__name__}"
