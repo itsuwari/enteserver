@@ -143,7 +143,9 @@ def presign_get(key: str, response_filename: str | None = None, expires: int | N
                 ExpiresIn=expires or settings.s3_presign_expiry,
                 HttpMethod="GET",
             )
-        except Exception:
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
+                logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
             continue
     raise FileNotFoundError(f"Object '{key}' not found in any configured tier")
 
