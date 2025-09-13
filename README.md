@@ -12,20 +12,8 @@ Run:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-export ADMIN_EMAIL="admin@example.com"
-export ADMIN_PASSWORD="changeme"
-export JWT_SECRET="dev-secret"
-
-export S3_ENABLED=1
-export S3_ENDPOINT_URL="http://localhost:9000"
-export S3_REGION="us-east-1"
-export S3_ACCESS_KEY="minioadmin"
-export S3_SECRET_KEY="minioadmin"
-export S3_BUCKET="ente-objects"
-export S3_USE_PATH_STYLE=1
-export ALBUMS_BASE_URL="http://localhost:3002"
-
+cp config.example.toml config.toml
+# edit config.toml as needed (env vars override values)
 uvicorn app.main:app --reload
 # Swagger: http://localhost:8000/docs
 ```

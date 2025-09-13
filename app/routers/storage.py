@@ -10,7 +10,7 @@ from ..storage import (
     set_user_storage_quota, add_storage_bonus, format_storage_size,
     get_tier_quota_for_user, get_user_replica_usage
 )
-from ..s3 import get_available_tiers_for_subscription, StorageTier
+from ..s3 import get_available_tiers_for_subscription
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 
@@ -79,35 +79,11 @@ def get_tier_quotas(current_user: User = Depends(get_current_user)):
 def get_replication_info(current_user: User = Depends(get_current_user)):
     """Get replication information and available tiers for user"""
     available_tiers = get_available_tiers_for_subscription(current_user.subscription_type)
-    
-    replication_rules = {
-        "free": "Full replication: PRIMARY → SECONDARY → COLD (equal for all)",
-        "paid": "Full replication: PRIMARY → SECONDARY → COLD (equal for all)",
-        "family": "Full replication: PRIMARY → SECONDARY → COLD (equal for all)"
-    }
-    
+
     return {
         "subscription_type": current_user.subscription_type,
-        "available_tiers": [tier.value for tier in available_tiers],
-        "replication_rule": replication_rules.get(current_user.subscription_type, "Unknown"),
-        "automatic_replication": True,  # All users get automatic replication
-        "tier_details": {
-            "primary": {
-                "name": "Primary Storage",
-                "description": "Hot storage for active files (counts against quota)",
-                "available": StorageTier.PRIMARY in available_tiers
-            },
-            "secondary": {
-                "name": "Secondary Storage", 
-                "description": "Hot backup storage for redundancy (free)",
-                "available": StorageTier.SECONDARY in available_tiers
-            },
-            "cold": {
-                "name": "Cold Storage",
-                "description": "Archive storage for long-term retention (free)", 
-                "available": StorageTier.COLD in available_tiers
-            }
-        }
+        "available_tiers": available_tiers,
+        "automatic_replication": True,
     }
 
 @router.get("/detailed-usage")

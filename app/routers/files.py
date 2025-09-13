@@ -14,7 +14,7 @@ from ..schemas import (
 )
 from ..security import get_current_user
 from ..config import settings
-from ..s3 import presign_put, presign_get, mpu_init, mpu_presign_part, mpu_complete, head_object_size_and_etag, StorageTier, replicate_after_upload
+from ..s3 import presign_put, presign_get, mpu_init, mpu_presign_part, mpu_complete, head_object_size_and_etag, replicate_after_upload
 from ..storage import enforce_storage_quota, add_file_to_storage_usage, remove_file_from_storage_usage, StorageQuotaExceeded
 from ..schemas import StorageQuotaExceededError
 
@@ -53,11 +53,10 @@ def multipart_complete(payload: MultipartCompleteRequest, current_user: User = D
     
     # Complete multipart upload with automatic replication
     result = mpu_complete(
-        payload.object_key, 
-        payload.upload_id, 
-        parts, 
-        StorageTier.PRIMARY, 
-        current_user.subscription_type
+        payload.object_key,
+        payload.upload_id,
+        parts,
+        subscription_type=current_user.subscription_type
     )
     
     return {"completed": True, "result": result}
@@ -108,11 +107,10 @@ def create_or_update_file(payload: FileCreate, db: Session = Depends(get_db), cu
     
     # Automatically replicate to appropriate tiers based on subscription
     replication_results = replicate_after_upload(
-        payload.file.object_key, 
-        current_user.subscription_type, 
-        StorageTier.PRIMARY,
-        f,  # Pass the original file object
-        db  # Pass the database session
+        payload.file.object_key,
+        current_user.subscription_type,
+        original_file=f,
+        db=db
     )
     
     response = {"fileId": f.id}
