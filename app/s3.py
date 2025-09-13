@@ -186,7 +186,8 @@ def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> 
             raise ValueError("'tier' must be specified when all_tiers is False")
         try:
             _client(tier).delete_object(Bucket=_bucket(tier), Key=key)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to delete {key} from {tier} tier: {e}")
             success = False
     return success
 
