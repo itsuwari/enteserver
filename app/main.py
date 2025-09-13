@@ -35,16 +35,19 @@ from .db import SessionLocal, engine
 from .config import settings
 from . import s3 as s3mod
 
+
 @app.get("/version")
 def version():
+    """Return build/version information for the server."""
     return {
-        "commit": os.getenv("GIT_COMMIT", os.getenv("COMMIT", "unknown")),
-        "buildDate": os.getenv("BUILD_DATE", "unknown"),
-        "apiMode": os.getenv("API_MODE", os.getenv("ENV", "unknown")),
+        "version": os.getenv("GIT_COMMIT", os.getenv("COMMIT", "unknown")),
+        "build": os.getenv("BUILD_DATE", "unknown"),
     }
+
 
 @app.get("/healthz")
 def healthz():
+    """Run simple checks for the database and S3."""
     db_status = "skipped"
     s3_status = "skipped"
     # DB ping
@@ -65,4 +68,11 @@ def healthz():
         s3_status = f"error: {type(e).__name__}"
     server_time = int(dt.datetime.utcnow().timestamp() * 1_000_000)
     ok = (db_status in ("ok", "skipped")) and (s3_status in ("ok", "skipped"))
-    return {"ok": ok, "db": db_status, "s3": s3_status, "serverTime": server_time}
+    status = "ok" if ok else "error"
+    return {
+        "status": status,
+        "ok": ok,
+        "db": db_status,
+        "s3": s3_status,
+        "serverTime": server_time,
+    }
