@@ -17,9 +17,11 @@ class MultiCloudS3:
 
     def _init_backends(self) -> None:
         backends = settings.s3_backends or {}
-
         if backends:
             for name, cfg in backends.items():
+                bucket = cfg.get("bucket", settings.s3_bucket)
+                if not bucket:
+                    raise ValueError(f"No bucket configured for backend '{name}'")
                 client = boto3.client(
                     "s3",
                     aws_access_key_id=cfg.get("access_key", settings.s3_access_key),
@@ -32,8 +34,10 @@ class MultiCloudS3:
                     ),
                 )
                 self.clients[name] = client
-                self.buckets[name] = cfg.get("bucket", settings.s3_bucket or "")
+                self.buckets[name] = bucket
         else:
+            if not settings.s3_bucket:
+                raise ValueError("No S3 backend configured. Set 's3_bucket' or define 's3_backends'.")
             client = boto3.client(
                 "s3",
                 aws_access_key_id=settings.s3_access_key,
@@ -46,7 +50,7 @@ class MultiCloudS3:
                 ),
             )
             self.clients["main"] = client
-            self.buckets["main"] = settings.s3_bucket or ""
+            self.buckets["main"] = settings.s3_bucket
 
     def get_client(self, tier: str = "main"):
         return self.clients[tier]
@@ -132,17 +136,16 @@ def presign_get(key: str, response_filename: str | None = None, expires: int | N
             params = {"Bucket": _bucket(fallback_tier), "Key": key}
             if response_filename:
                 params["ResponseContentDisposition"] = f'attachment; filename="{response_filename}"'
-            try:
-                _client(fallback_tier).head_object(Bucket=_bucket(fallback_tier), Key=key)
-                return _client(fallback_tier).generate_presigned_url("get_object", Params=params, ExpiresIn=expires or settings.s3_presign_expiry, HttpMethod="GET")
-            except Exception:
-                continue
+            _client(fallback_tier).head_object(Bucket=_bucket(fallback_tier), Key=key)
+            return _client(fallback_tier).generate_presigned_url(
+                "get_object",
+                Params=params,
+                ExpiresIn=expires or settings.s3_presign_expiry,
+                HttpMethod="GET",
+            )
         except Exception:
             continue
-    params = {"Bucket": _bucket("main"), "Key": key}
-    if response_filename:
-        params["ResponseContentDisposition"] = f'attachment; filename="{response_filename}"'
-    return _client("main").generate_presigned_url("get_object", Params=params, ExpiresIn=expires or settings.s3_presign_expiry, HttpMethod="GET")
+    raise FileNotFoundError(f"Object '{key}' not found in any configured tier")
 
 def mpu_init(key: str, tier: str = "main") -> str:
     out = _client(tier).create_multipart_upload(Bucket=_bucket(tier), Key=key)
@@ -166,19 +169,21 @@ def mpu_complete(key: str, upload_id: str, parts: list[dict], tier: str = "main"
     _multicloud_s3.replicate_to_all_tiers(key, subscription_type, tier)
     return result
 
-def delete_object(key: str, all_tiers: bool = True) -> bool:
+def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> bool:
     success = True
     if all_tiers:
-        for tier in list(_multicloud_s3.clients.keys()):
+        for t in list(_multicloud_s3.clients.keys()):
             try:
-                _client(tier).delete_object(Bucket=_bucket(tier), Key=key)
-                logger.info(f"Deleted {key} from {tier} tier")
+                _client(t).delete_object(Bucket=_bucket(t), Key=key)
+                logger.info(f"Deleted {key} from {t} tier")
             except Exception as e:
-                logger.warning(f"Failed to delete {key} from {tier} tier: {e}")
+                logger.warning(f"Failed to delete {key} from {t} tier: {e}")
                 success = False
     else:
+        if tier is None:
+            raise ValueError("'tier' must be specified when all_tiers is False")
         try:
-            _client("main").delete_object(Bucket=_bucket("main"), Key=key)
+            _client(tier).delete_object(Bucket=_bucket(tier), Key=key)
         except Exception:
             success = False
     return success
