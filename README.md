@@ -34,16 +34,3 @@ python -m app.cli show-storage-usage --email user@example.com
 python -m app.cli refresh-storage-usage --email user@example.com
 python -m app.cli set-subscription --email user@example.com --type paid (Just a tier name, IAP money goes to ente)
 ```
-
-## One-click deploy
-
-Quickly run this server on popular hosting platforms:
-
-### Railway
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/itsuwari/enteserver)
-
-### Vercel
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/itsuwari/enteserver)
-
