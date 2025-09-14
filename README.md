@@ -6,7 +6,6 @@ Original https://github.com/ente-io/ente/tree/main/server
 We are trying to be compatible, provide a lighrter, easier to use server.
 There is a docker file but I highly recommend you just use the py version, its faster, and you should change settings.
 
-
 Run:
 
 ```bash
@@ -35,3 +34,16 @@ python -m app.cli show-storage-usage --email user@example.com
 python -m app.cli refresh-storage-usage --email user@example.com
 python -m app.cli set-subscription --email user@example.com --type paid (Just a tier name, IAP money goes to ente)
 ```
+
+## One-click deploy
+
+Quickly run this server on popular hosting platforms:
+
+### Railway
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/yourusername/enteserver)
+
+### Vercel
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/yourusername/enteserver)
+
