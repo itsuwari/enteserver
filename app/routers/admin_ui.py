@@ -4,6 +4,8 @@ import jwt, secrets, datetime as dt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
+from botocore.exceptions import BotoCoreError, ClientError
+
 from ..db import get_db
 from ..models import User, UserInvite
 from ..config import settings
@@ -21,7 +23,7 @@ def _get_admin_user(request: Request, db: Session = Depends(get_db)) -> User:
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], options={"verify_aud": False})
         user_id = int(payload.get("sub"))
-    except Exception:
+    except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     user = db.get(User, user_id)
     if not user or user.email != settings.admin_email:
@@ -46,7 +48,7 @@ def admin_index(request: Request, db: Session = Depends(get_db)):
                     "<li><a href='/admin/logout'>Logout</a></li>" \
                     "</ul>"
                 )
-        except Exception:
+        except jwt.PyJWTError:
             pass
     return HTMLResponse(
         "<h1>Admin Login</h1>" \
@@ -151,6 +153,6 @@ def bucket_info(admin: User = Depends(_get_admin_user)):
             f"<p>Objects: {total_count}<br/>Total size: {total_size} bytes</p>" \
             "<p><a href='/admin'>Back</a></p>"
         )
-    except Exception as e:
+    except (BotoCoreError, ClientError) as e:
         html = f"<h1>Error: {html.escape(str(e))}</h1><p><a href='/admin'>Back</a></p>"
     return HTMLResponse(html)

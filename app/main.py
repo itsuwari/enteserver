@@ -35,6 +35,8 @@ def ping():
 
 import os, datetime as dt
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from botocore.exceptions import BotoCoreError, ClientError
 from .db import SessionLocal, engine
 from .config import settings
 from . import s3 as s3mod
@@ -59,7 +61,7 @@ def healthz():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         db_status = "ok"
-    except Exception as e:
+    except SQLAlchemyError as e:
         db_status = f"error: {type(e).__name__}"
     # S3 ping
     try:
@@ -67,9 +69,9 @@ def healthz():
             client = s3mod._client()
             bucket = s3mod._bucket()
             if bucket:
-                client.list_objects_v2(Bucket=bucket, MaxKeys=1)
+                client.generate_presigned_url("list_objects_v2", Params={"Bucket": bucket})
             s3_status = "ok"
-    except Exception as e:
+    except (BotoCoreError, ClientError) as e:
         s3_status = f"error: {type(e).__name__}"
     server_time = int(dt.datetime.utcnow().timestamp() * 1_000_000)
     ok = (db_status in ("ok", "skipped")) and (s3_status in ("ok", "skipped"))
