@@ -10,6 +10,8 @@ from .routers.kex import router as kex_router
 from .routers.albums_redirect import router as albums_redirect_router
 from .routers.trash import router as trash_router
 from .routers.storage import router as storage_router
+from .routers.admin_ui import router as admin_ui_router
+from .routers.invite import router as invite_router
 
 app = FastAPI(title="Museum-subset (FastAPI) with S3 presign, sessions, trash")
 
@@ -23,6 +25,8 @@ app.include_router(kex_router)
 app.include_router(albums_redirect_router)
 app.include_router(trash_router)
 app.include_router(storage_router)
+app.include_router(admin_ui_router)
+app.include_router(invite_router)
 
 @app.get("/ping")
 def ping():

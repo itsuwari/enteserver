@@ -3,6 +3,7 @@ import boto3
 import logging
 from typing import Optional, Dict, Any, List
 from botocore.client import Config as BotoConfig
+from botocore.exceptions import ClientError
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -143,9 +144,10 @@ def presign_get(key: str, response_filename: str | None = None, expires: int | N
                 ExpiresIn=expires or settings.s3_presign_expiry,
                 HttpMethod="GET",
             )
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
-                logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
+        except Exception as e:
+            if isinstance(e, ClientError):
+                if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
+                    logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
             continue
     raise FileNotFoundError(f"Object '{key}' not found in any configured tier")
 

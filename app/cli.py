@@ -4,10 +4,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import secrets
+import datetime as dt
 from typing import Optional
 
 from .db import Base, engine, SessionLocal
-from .models import User
+from .models import User, UserInvite
 from .security import hash_password
 from .config import settings
 from .storage import (
@@ -31,23 +33,19 @@ def _print_user(u: User, show_storage: bool = False):
         print(f"  storage: {used_gb:.2f}GB / {total_quota_gb:.2f}GB (quota: {quota_gb:.2f}GB, bonus: {bonus_gb:.2f}GB)")
         print(f"  subscription: {u.subscription_type}")
 
-def add_user(email: str, password: Optional[str] = None, prompt: bool = False):
-    if prompt or not password:
-        pw1 = getpass.getpass("New password: ")
-        pw2 = getpass.getpass("Confirm password: ")
-        if pw1 != pw2:
-            print("Error: passwords do not match", file=sys.stderr)
-            sys.exit(2)
-        password = pw1
+def invite_user(email: str):
     _ensure_db()
     db = _open_session()
     try:
         if db.query(User).filter(User.email == email).first():
             print("Error: user already exists", file=sys.stderr)
             sys.exit(1)
-        u = User(email=email, password_hash=hash_password(password))
-        db.add(u); db.commit(); db.refresh(u)
-        print("User created:"); _print_user(u)
+        token = secrets.token_urlsafe(32)
+        inv = UserInvite(email=email, token=token, expires_at=dt.datetime.utcnow() + dt.timedelta(days=7))
+        db.add(inv)
+        db.commit()
+        link = f"/invite/accept?token={token}"
+        print(f"Invite link for {email}: {link}")
     finally:
         db.close()
 
@@ -252,12 +250,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="cmd", required=True)
     cmd_parsers = {}
 
-    p_add = sub.add_parser("add-user", help="Create a new user"); cmd_parsers['add-user'] = p_add
-    p_add.add_argument("--email", required=True)
-    pw_grp_add = p_add.add_mutually_exclusive_group()
-    pw_grp_add.add_argument("--password", help="Password (omit to be prompted)")
-    pw_grp_add.add_argument("--prompt", action="store_true", help="Prompt for password")
-    p_add.set_defaults(func=lambda a: add_user(a.email, a.password, a.prompt))
+    p_inv = sub.add_parser("invite-user", help="Create an invite link for a new user"); cmd_parsers['invite-user'] = p_inv
+    p_inv.add_argument("--email", required=True)
+    p_inv.set_defaults(func=lambda a: invite_user(a.email))
 
     p_cup = sub.add_parser("change-user-password", help="Change a user's password"); cmd_parsers['change-user-password'] = p_cup
     p_cup.add_argument("--email", required=True)
