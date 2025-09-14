@@ -2,9 +2,13 @@ import os
 import boto3
 
 
+from botocore.exceptions import ClientError
+
+
 class _DummyClient:
     def head_object(self, *args, **kwargs):
-        raise Exception("missing")
+        error_response = {"Error": {"Code": "404", "Message": "Not Found"}}
+        raise ClientError(error_response, "head_object")
 
     def generate_presigned_url(self, *args, **kwargs):
         return "url"

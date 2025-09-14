@@ -3,6 +3,9 @@ import boto3
 import logging
 from typing import Optional, Dict, Any, List
 from botocore.client import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy.exc import SQLAlchemyError
+
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -77,7 +80,7 @@ class MultiCloudS3:
 
             logger.info(f"Successfully replicated {key} from {source_tier} to {target_tier}")
             return True
-        except Exception as e:
+        except (BotoCoreError, ClientError) as e:
             logger.error(f"Failed to replicate {key} from {source_tier} to {target_tier}: {e}")
             return False
 
@@ -94,7 +97,7 @@ class MultiCloudS3:
                     from .storage import create_replica_file_record
                     create_replica_file_record(original_file, target_tier, db)
                     logger.info(f"Created replica record for {key} in {target_tier} tier")
-                except Exception as e:
+                except SQLAlchemyError as e:
                     logger.error(f"Failed to create replica record for {key} in {target_tier}: {e}")
 
         return results
@@ -143,9 +146,10 @@ def presign_get(key: str, response_filename: str | None = None, expires: int | N
                 ExpiresIn=expires or settings.s3_presign_expiry,
                 HttpMethod="GET",
             )
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
-                logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
+        except (BotoCoreError, ClientError) as e:
+            if isinstance(e, ClientError):
+                if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
+                    logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
             continue
     raise FileNotFoundError(f"Object '{key}' not found in any configured tier")
 
@@ -178,7 +182,7 @@ def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> 
             try:
                 _client(t).delete_object(Bucket=_bucket(t), Key=key)
                 logger.info(f"Deleted {key} from {t} tier")
-            except Exception as e:
+            except (BotoCoreError, ClientError) as e:
                 logger.warning(f"Failed to delete {key} from {t} tier: {e}")
                 success = False
     else:
@@ -186,7 +190,7 @@ def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> 
             raise ValueError("'tier' must be specified when all_tiers is False")
         try:
             _client(tier).delete_object(Bucket=_bucket(tier), Key=key)
-        except Exception as e:
+        except (BotoCoreError, ClientError) as e:
             logger.warning(f"Failed to delete {key} from {tier} tier: {e}")
             success = False
     return success
@@ -200,7 +204,7 @@ def get_object_info(key: str, tier: str = "main") -> Optional[Dict[str, Any]]:
             "last_modified": response.get("LastModified"),
             "content_type": response.get("ContentType"),
         }
-    except Exception:
+    except (BotoCoreError, ClientError):
         return None
 
 def replicate_object(key: str, source_tier: str, target_tier: str) -> bool:

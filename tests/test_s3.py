@@ -1,5 +1,6 @@
 import importlib
 import pytest
+from botocore.exceptions import ClientError
 
 
 @pytest.fixture
@@ -11,7 +12,8 @@ def s3_mod():
 
     class DummyClient:
         def head_object(self, Bucket, Key):
-            raise Exception("missing")
+            error_response = {"Error": {"Code": "404", "Message": "Not Found"}}
+            raise ClientError(error_response, "head_object")
 
         def generate_presigned_url(self, *args, **kwargs):
             return "url"

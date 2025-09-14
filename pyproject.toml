@@ -168,8 +168,8 @@ exclude_lines = [
     "raise NotImplementedError",
     "if 0:",
     "if __name__ == .__main__.:",
-    "class .*\bProtocol\):",
-    "@(abc\.)?abstractmethod",
+    'class .*\bProtocol\):',
+    '@(abc\.)?abstractmethod',
 ]
 ignore_errors = true
 show_missing = true

@@ -149,3 +149,13 @@ class UserSession(Base):
     client_package = Column(String, nullable=True)
     client_version = Column(String, nullable=True)
     revoked = Column(Boolean, default=False)
+
+
+class UserInvite(Base):
+    __tablename__ = "user_invites"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True, nullable=False)
+    token = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    consumed = Column(Boolean, default=False)
