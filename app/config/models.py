@@ -1,7 +1,7 @@
 from __future__ import annotations
-import os
-import tomllib
+
 from pydantic import BaseModel, Field
+
 
 class Settings(BaseModel):
     app_name: str = "Museum‑subset (FastAPI)"
@@ -63,34 +63,3 @@ class Settings(BaseModel):
     # Rate Limiting
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 60
-
-
-def _load_from_toml() -> dict:
-    path = os.environ.get("CONFIG_FILE", "config.toml")
-    if not os.path.exists(path):
-        return {}
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-    s3_section = data.get("s3", {})
-    backends = s3_section.pop("backends", None)
-    flat: dict[str, object] = {}
-    if backends:
-        flat["s3_backends"] = backends
-    for key, value in data.items():
-        if isinstance(value, dict):
-            for subkey, subval in value.items():
-                flat[f"{key}_{subkey}"] = subval
-        else:
-            flat[key] = value
-    return flat
-
-
-def load_settings() -> Settings:
-    data = _load_from_toml()
-    for field in Settings.model_fields:
-        env_var = field.upper()
-        if env_var in os.environ:
-            data[field] = os.environ[env_var]
-    return Settings(**data)
-
-settings = load_settings()

@@ -17,6 +17,29 @@ uvicorn app.main:app --reload
 # Swagger: http://localhost:8000/docs
 ```
 
+### Configuration
+
+Runtime configuration is centralized through the `app/config` package. Edit
+`config.toml` (or point the `CONFIG_FILE` environment variable to another
+TOML file) to override settings; the Python modules import the generated
+`Settings` object from `app.config`. This keeps a single source of truth for
+application options while still giving tests and scripts a convenient
+`config.override(...)` helper when temporary adjustments are required.
+
+### Object storage configuration
+
+The server now supports multiple storage backends simultaneously. Each backend
+can be an S3-compatible service or a local filesystem path. Define the desired
+mix of backends in the `[s3.backends]` section of `config.toml`. For example,
+you can configure a local directory as the primary tier and still replicate
+objects to a remote S3 bucket, or use multiple local folders for additional
+redundancy. See `config.example.toml` for a sample configuration that combines
+an S3 bucket with a local path. When a local backend is active the server
+exposes signed URLs under `/local-storage/...` that behave like S3 presigned
+links for uploads, downloads, and multipart uploads. These endpoints are served
+by the FastAPI app itself so all storage traffic stays on the same port as the
+rest of the API.
+
 CLI:
 
 ```bash

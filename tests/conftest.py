@@ -28,6 +28,28 @@ class _DummyClient:
     def copy_object(self, *args, **kwargs):
         return {}
 
+    def upload_fileobj(self, *args, **kwargs):
+        return {}
+
+    def put_object(self, *args, **kwargs):
+        return {}
+
+    def download_fileobj(self, *args, **kwargs):
+        if len(args) >= 3:
+            fileobj = args[2]
+        else:
+            fileobj = kwargs.get("Fileobj")
+        if fileobj:
+            fileobj.write(b"")
+        return {}
+
+    def get_object(self, *args, **kwargs):
+        class _Body:
+            def read(self_inner):
+                return b""
+
+        return {"Body": _Body()}
+
 
 os.environ.setdefault("S3_BUCKET", "test-bucket")
 boto3.client = lambda *args, **kwargs: _DummyClient()

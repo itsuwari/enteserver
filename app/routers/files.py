@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 import uuid, mimetypes, datetime as dt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from ..db import get_db
@@ -13,8 +13,17 @@ from ..schemas import (
     MultipartCompleteRequest, DuplicatesResponse
 )
 from ..security import get_current_user
-from ..config import settings
-from ..s3 import presign_put, presign_get, mpu_init, mpu_presign_part, mpu_complete, head_object_size_and_etag, replicate_after_upload
+from ..s3 import (
+    presign_put,
+    presign_get,
+    mpu_init,
+    mpu_presign_part,
+    mpu_complete,
+    head_object_size_and_etag,
+    replicate_after_upload,
+    object_storage_available,
+    resolve_presigned_url,
+)
 from ..storage import enforce_storage_quota, add_file_to_storage_usage, remove_file_from_storage_usage, StorageQuotaExceeded
 from ..schemas import StorageQuotaExceededError
 
@@ -23,27 +32,47 @@ router = APIRouter(prefix="/files", tags=["files"])
 # Use the new multi-cloud aware function
 _head_size_and_etag = head_object_size_and_etag
 
+
+def _absolute_presign(url: str, request: Request) -> str:
+    return resolve_presigned_url(url, str(request.base_url))
+
 @router.get("/upload-urls", response_model=UploadURLResponse)
-def get_upload_urls(count: int = Query(1, ge=1, le=100), current_user: User = Depends(get_current_user)):
+def get_upload_urls(
+    request: Request,
+    count: int = Query(1, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+):
     urls = []
     for _ in range(count):
         key = f"{current_user.id}/" + uuid.uuid4().hex
-        urls.append(UploadURL(objectKey=key, url=presign_put(key)))
+        upload_url = _absolute_presign(presign_put(key), request)
+        urls.append(UploadURL(objectKey=key, url=upload_url))
     return UploadURLResponse(urls=urls)
 
 @router.get("/data/preview-upload-url", response_model=UploadURL)
-def preview_upload_url(current_user: User = Depends(get_current_user)):
+def preview_upload_url(request: Request, current_user: User = Depends(get_current_user)):
     key = f"{current_user.id}/" + uuid.uuid4().hex
-    return UploadURL(objectKey=key, url=presign_put(key))
+    return UploadURL(objectKey=key, url=_absolute_presign(presign_put(key), request))
 
 @router.get("/multipart-upload-urls", response_model=MultipartUploadURLsResponse)
-def multipart_upload_urls(count: int = Query(1, ge=1, le=50), parts: int = Query(4, ge=1, le=100), current_user: User = Depends(get_current_user)):
+def multipart_upload_urls(
+    request: Request,
+    count: int = Query(1, ge=1, le=50),
+    parts: int = Query(4, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+):
     items = []
     for _ in range(count):
         object_key = f"{current_user.id}/" + uuid.uuid4().hex
         upload_id = mpu_init(object_key)
-        part_urls = [mpu_presign_part(object_key, upload_id, n) for n in range(1, parts+1)]
-        complete_url = f"/files/multipart-complete?objectKey={object_key}&uploadId={upload_id}"
+        part_urls = [
+            _absolute_presign(mpu_presign_part(object_key, upload_id, n), request)
+            for n in range(1, parts + 1)
+        ]
+        complete_url = _absolute_presign(
+            f"/files/multipart-complete?objectKey={object_key}&uploadId={upload_id}",
+            request,
+        )
         items.append(MultipartUploadURLs(objectKey=object_key, uploadId=upload_id, partUrls=part_urls, completeUrl=complete_url))
     return MultipartUploadURLsResponse(urls=items)
 
@@ -145,22 +174,30 @@ def update_file(payload: FileUpdate, db: Session = Depends(get_db), current_user
     return {"fileId": f.id, "updated": True}
 
 @router.get("/download/{file_id}")
-def download_file(file_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def download_file(file_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     f = db.get(File, file_id)
     if not f or f.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
-    if settings.s3_enabled:
-        return RedirectResponse(url=presign_get(f.file_object_key, response_filename=f.original_filename or f"file_{f.id}"), status_code=307)
-    raise HTTPException(status_code=501, detail="Local storage disabled")
+    if object_storage_available():
+        redirect_url = _absolute_presign(
+            presign_get(f.file_object_key, response_filename=f.original_filename or f"file_{f.id}"),
+            request,
+        )
+        return RedirectResponse(url=redirect_url, status_code=307)
+    raise HTTPException(status_code=501, detail="Object storage disabled")
 
 @router.get("/preview/{file_id}", response_model=None)
-def preview_file(file_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def preview_file(file_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     f = db.get(File, file_id)
     if not f or f.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
-    if settings.s3_enabled:
-        return RedirectResponse(url=presign_get(f.thumbnail_object_key or f.file_object_key), status_code=307)
-    raise HTTPException(status_code=501, detail="Local storage disabled")
+    if object_storage_available():
+        redirect_url = _absolute_presign(
+            presign_get(f.thumbnail_object_key or f.file_object_key),
+            request,
+        )
+        return RedirectResponse(url=redirect_url, status_code=307)
+    raise HTTPException(status_code=501, detail="Object storage disabled")
 
 @router.post("/size", response_model=SizeResponse)
 def files_size(payload: FileIDsRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -190,7 +227,7 @@ def update_thumbnail(payload: UpdateThumbnailRequest, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="File not found")
     ts, _ = _head_size_and_etag(payload.object_key)
     if ts is None:
-        raise HTTPException(status_code=400, detail="thumbnail object not found in S3")
+        raise HTTPException(status_code=400, detail="thumbnail object not found in object storage")
     f.thumbnail_object_key = payload.object_key
     db.commit()
     return {"fileId": f.id, "thumbnailObjectKey": f.thumbnail_object_key}

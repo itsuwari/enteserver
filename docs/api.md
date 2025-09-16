@@ -50,5 +50,7 @@ features are stubs.  Use this server only for development and with test data.
 uvicorn app.main:app --reload
 ```
 
-The server uses a local SQLite database file and an S3-compatible object store. Configuration
-options are documented in `app/config.py` and can be provided via environment variables.
+The server uses a local SQLite database file and supports one or more object storage
+backends. Each backend can point to an S3-compatible service or a local filesystem
+path. Configuration options are documented in `app/config.py` and can be provided
+via environment variables.

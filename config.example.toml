@@ -19,3 +19,10 @@ bucket = "app-main"
 
 [s3.backends.backup]
 bucket = "app-backup"
+
+[s3.backends.local]
+type = "local"
+base_path = "./object-storage"
+# Optional override for presigned URLs. When omitted the API host/port is used
+# automatically so local storage stays behind the same FastAPI server.
+# base_url = "http://localhost:8000"

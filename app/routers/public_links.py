@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 import datetime as dt, secrets
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from ..db import get_db
@@ -9,12 +9,16 @@ from ..models import PublicCollectionLink, PublicFileLink, Collection, File, Use
 from ..schemas import PublicCollectionCreate, PublicLinkResponse, FileCreate
 from ..security import get_current_user
 from ..config import settings
-from ..s3 import presign_get, head_object_size_and_etag
+from ..s3 import presign_get, head_object_size_and_etag, resolve_presigned_url
 
 router = APIRouter(prefix="/public", tags=["public-links"])
 
 def _tok() -> str:
     return secrets.token_urlsafe(16)
+
+
+def _absolute_presign(url: str, request: Request) -> str:
+    return resolve_presigned_url(url, str(request.base_url))
 
 @router.post("/collections", response_model=PublicLinkResponse)
 def create_public_collection_link(payload: PublicCollectionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -42,20 +46,22 @@ def public_collection_redirect(token: str):
     return RedirectResponse(url=f"{settings.albums_base_url.rstrip('/')}/{token}", status_code=307)
 
 @router.get("/collections/{token}/preview/{file_id}")
-def public_preview(token: str, file_id: int, db: Session = Depends(get_db)):
+def public_preview(token: str, file_id: int, request: Request, db: Session = Depends(get_db)):
     link = _validate_collection_token(db, token)
     f = db.get(File, file_id)
     if not f or f.collection_id != link.collection_id:
         raise HTTPException(status_code=404, detail="Not found")
-    return RedirectResponse(url=presign_get(f.thumbnail_object_key or f.file_object_key), status_code=307)
+    redirect_url = _absolute_presign(presign_get(f.thumbnail_object_key or f.file_object_key), request)
+    return RedirectResponse(url=redirect_url, status_code=307)
 
 @router.get("/files/{token}")
-def public_file_redirect(token: str, db: Session = Depends(get_db)):
+def public_file_redirect(token: str, request: Request, db: Session = Depends(get_db)):
     link = db.query(PublicFileLink).filter(PublicFileLink.token == token).first()
     if not link: raise HTTPException(status_code=404, detail="Invalid link")
     f = db.get(File, link.file_id)
     if not f: raise HTTPException(status_code=404, detail="Not found")
-    return RedirectResponse(url=presign_get(f.file_object_key), status_code=307)
+    redirect_url = _absolute_presign(presign_get(f.file_object_key), request)
+    return RedirectResponse(url=redirect_url, status_code=307)
 
 @router.post("/collections/{token}/commit-file")
 def public_collection_commit_file(token: str, payload: FileCreate, db: Session = Depends(get_db)):
