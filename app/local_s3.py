@@ -7,6 +7,7 @@ import mimetypes
 import shutil
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import AsyncIterator, Dict, Iterable, Optional
 
@@ -27,6 +28,7 @@ class LocalS3Client:
         *,
         base_url: str | None = None,
         secret: str,
+        chunk_size: int = 1024 * 1024,
     ) -> None:
         self.name = name
         self.base_path = Path(base_path).expanduser().resolve()
@@ -35,6 +37,7 @@ class LocalS3Client:
         self._secret = secret.encode("utf-8")
         self._multipart_dir = self.base_path / ".multipart"
         self._multipart_dir.mkdir(parents=True, exist_ok=True)
+        self._chunk_size = max(1, int(chunk_size))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -214,7 +217,13 @@ class LocalS3Client:
     def write_fileobj(self, key: str, fileobj) -> None:
         path = self._object_path(key)
         with path.open("wb") as dest:
-            shutil.copyfileobj(fileobj, dest)
+            while True:
+                chunk = fileobj.read(self._chunk_size)
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    chunk = bytes(chunk)
+                dest.write(chunk)
 
     def open_for_write(self, key: str):
         path = self._object_path(key)
@@ -222,7 +231,14 @@ class LocalS3Client:
 
     def copy_from_path(self, key: str, source_path: Path) -> None:
         dest_path = self._object_path(key)
-        shutil.copy2(source_path, dest_path)
+        with source_path.open("rb") as src, dest_path.open("wb") as dest:
+            while True:
+                chunk = src.read(self._chunk_size)
+                if not chunk:
+                    break
+                dest.write(chunk)
+        with suppress(OSError):
+            shutil.copystat(source_path, dest_path, follow_symlinks=True)
 
     def head_object(self, *, Bucket: str | None, Key: str) -> Dict[str, object]:
         try:
