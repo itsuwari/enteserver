@@ -26,7 +26,7 @@ class RecordingS3Client:
         self.upload_part_calls += 1
         if self.fail_first_part and self.upload_part_calls == 1:
             raise ClientError({"Error": {"Code": "RequestTimeout", "Message": "fail"}}, "UploadPart")
-        chunk = bytes(Body)
+        chunk = Body if isinstance(Body, bytes) else bytes(Body)
         self.uploaded_parts.append((PartNumber, chunk))
         return {"ETag": f"etag-{PartNumber}"}
 
