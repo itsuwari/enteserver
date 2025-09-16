@@ -109,8 +109,9 @@ class MultiCloudS3:
                     if hasattr(source_client, "download_fileobj"):
                         source_client.download_fileobj(Bucket=source_bucket, Key=key, Fileobj=dest)
                     else:
-                        body = source_client.get_object(Bucket=source_bucket, Key=key)["Body"].read()
-                        dest.write(body)
+                        import shutil
+                        response = source_client.get_object(Bucket=source_bucket, Key=key)
+                        shutil.copyfileobj(response["Body"], dest)
             else:
                 source_bucket = self.get_bucket(source_tier)
                 target_bucket = self.get_bucket(target_tier)
