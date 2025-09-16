@@ -102,7 +102,7 @@ class MultiCloudS3:
                     if hasattr(target_client, "upload_fileobj"):
                         target_client.upload_fileobj(fh, target_bucket, key)
                     else:
-                        target_client.put_object(Bucket=target_bucket, Key=key, Body=fh.read())
+                        target_client.put_object(Bucket=target_bucket, Key=key, Body=fh)
             elif source_type == "s3" and target_type == "local":
                 source_bucket = self.get_bucket(source_tier)
                 with target_client.open_for_write(key) as dest:
