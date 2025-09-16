@@ -3,6 +3,44 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 from botocore.exceptions import ClientError
+from unittest.mock import patch
+
+
+class RecordingS3Client:
+    def __init__(self, fail_first_part: bool = False):
+        self.fail_first_part = fail_first_part
+        self.upload_part_calls = 0
+        self.multipart_uploads: list[tuple[str, str, str]] = []
+        self.uploaded_parts: list[tuple[int, bytes]] = []
+        self.put_calls: list[tuple[str, str, bytes]] = []
+        self.aborted = 0
+        self.completed_uploads = 0
+        self.completed_parts: list[dict] | None = None
+
+    def create_multipart_upload(self, Bucket, Key):
+        upload_id = f"upload-{len(self.multipart_uploads) + 1}"
+        self.multipart_uploads.append((Bucket, Key, upload_id))
+        return {"UploadId": upload_id}
+
+    def upload_part(self, Bucket, Key, UploadId, PartNumber, Body):
+        self.upload_part_calls += 1
+        if self.fail_first_part and self.upload_part_calls == 1:
+            raise ClientError({"Error": {"Code": "RequestTimeout", "Message": "fail"}}, "UploadPart")
+        chunk = bytes(Body)
+        self.uploaded_parts.append((PartNumber, chunk))
+        return {"ETag": f"etag-{PartNumber}"}
+
+    def complete_multipart_upload(self, Bucket, Key, UploadId, MultipartUpload):
+        self.completed_uploads += 1
+        self.completed_parts = MultipartUpload["Parts"]
+        return {}
+
+    def abort_multipart_upload(self, Bucket, Key, UploadId):
+        self.aborted += 1
+
+    def put_object(self, Bucket, Key, Body):
+        self.put_calls.append((Bucket, Key, bytes(Body)))
+        return {}
 
 
 @pytest.fixture
@@ -101,3 +139,67 @@ def test_resolve_presigned_url_uses_request_host(tmp_path):
     resolved = s3.resolve_presigned_url(raw_url, "http://example.com/api")
     assert resolved.startswith("http://example.com/api/local-storage/primary/1/sample.bin")
     assert "expires=" in resolved and "signature=" in resolved
+
+
+def test_chunked_remote_copy_retries(tmp_path):
+    from app.local_s3 import LocalS3Client
+    from app.s3 import MultiCloudS3
+
+    local_client = LocalS3Client(name="local", base_path=str(tmp_path / "src"), secret="secret")
+    data = b"abcdefghij"  # 10 bytes to trigger multiple chunks with chunk_size=4
+    local_client.save_object("items/sample.bin", [data])
+
+    target_client = RecordingS3Client(fail_first_part=True)
+
+    with patch.object(MultiCloudS3, "_init_backends", lambda self: None):
+        mc = MultiCloudS3()
+
+    mc.clients = {"source": local_client, "target": target_client}
+    mc.buckets = {"source": "ignored", "target": "bucket"}
+    mc.backend_types = {"source": "local", "target": "s3"}
+    mc.chunk_size = 4
+    mc.max_copy_retries = 3
+    mc.retry_backoff = 0
+
+    assert mc.copy_object_between_buckets("items/sample.bin", "source", "target")
+    assert target_client.put_calls == []
+    assert len(target_client.multipart_uploads) == 2  # failure + retry
+    assert target_client.aborted == 1
+    assert target_client.completed_uploads == 1
+    assert target_client.upload_part_calls == 4  # one failure, three successful parts
+    assert target_client.uploaded_parts == [
+        (1, b"abcd"),
+        (2, b"efgh"),
+        (3, b"ij"),
+    ]
+    assert target_client.completed_parts == [
+        {"PartNumber": 1, "ETag": "etag-1"},
+        {"PartNumber": 2, "ETag": "etag-2"},
+        {"PartNumber": 3, "ETag": "etag-3"},
+    ]
+
+
+def test_chunked_remote_copy_small_object(tmp_path):
+    from app.local_s3 import LocalS3Client
+    from app.s3 import MultiCloudS3
+
+    local_client = LocalS3Client(name="local", base_path=str(tmp_path / "src2"), secret="secret")
+    local_client.save_object("items/tiny.bin", [b"hi"])
+
+    target_client = RecordingS3Client()
+
+    with patch.object(MultiCloudS3, "_init_backends", lambda self: None):
+        mc = MultiCloudS3()
+
+    mc.clients = {"source": local_client, "target": target_client}
+    mc.buckets = {"source": "ignored", "target": "bucket"}
+    mc.backend_types = {"source": "local", "target": "s3"}
+    mc.chunk_size = 4
+    mc.max_copy_retries = 2
+    mc.retry_backoff = 0
+
+    assert mc.copy_object_between_buckets("items/tiny.bin", "source", "target")
+    assert target_client.multipart_uploads == []
+    assert target_client.upload_part_calls == 0
+    assert target_client.put_calls == [("bucket", "items/tiny.bin", b"hi")]
+    assert target_client.completed_uploads == 0

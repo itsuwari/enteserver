@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import boto3
 import logging
+import time
+from contextlib import closing, suppress
 from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin
 from botocore.client import Config as BotoConfig
@@ -20,6 +22,9 @@ class MultiCloudS3:
         self.clients: Dict[str, Any] = {}
         self.buckets: Dict[str, str] = {}
         self.backend_types: Dict[str, str] = {}
+        self.chunk_size = 5 * 1024 * 1024
+        self.max_copy_retries = 3
+        self.retry_backoff = 0.5
         self._init_backends()
 
     def _init_backends(self) -> None:
@@ -84,48 +89,142 @@ class MultiCloudS3:
         return [t for t in self.clients.keys() if t != source_tier]
 
     def copy_object_between_buckets(self, key: str, source_tier: str, target_tier: str) -> bool:
-        try:
-            source_client = self.get_client(source_tier)
-            target_client = self.get_client(target_tier)
-            source_type = self.get_backend_type(source_tier)
-            target_type = self.get_backend_type(target_tier)
+        attempts = 0
+        while attempts < self.max_copy_retries:
+            attempts += 1
+            try:
+                self._copy_object_once(key, source_tier, target_tier)
+                logger.info(
+                    f"Successfully replicated {key} from {source_tier} to {target_tier} (attempt {attempts})"
+                )
+                return True
+            except (
+                BotoCoreError,
+                ClientError,
+                LocalS3Error,
+                FileNotFoundError,
+                OSError,
+                AttributeError,
+            ) as e:
+                logger.error(
+                    f"Attempt {attempts} failed to replicate {key} from {source_tier} to {target_tier}: {e}"
+                )
+                if attempts >= self.max_copy_retries:
+                    break
+                backoff = self.retry_backoff * (2 ** (attempts - 1))
+                if backoff > 0:
+                    time.sleep(backoff)
+        logger.error(
+            f"Failed to replicate {key} from {source_tier} to {target_tier} after {self.max_copy_retries} attempts"
+        )
+        return False
 
-            if source_type == "local" and target_type == "local":
+    def _copy_object_once(self, key: str, source_tier: str, target_tier: str) -> None:
+        source_client = self.get_client(source_tier)
+        target_client = self.get_client(target_tier)
+        source_type = self.get_backend_type(source_tier)
+        target_type = self.get_backend_type(target_tier)
+
+        if source_type == "local":
+            if target_type == "local":
                 if source_client.base_path == target_client.base_path:
-                    logger.info(f"Simulated replication: {key} within {source_tier} (same storage root)")
-                    return True
+                    logger.info(
+                        f"Simulated replication: {key} within {source_tier} (same storage root)"
+                    )
+                    return
                 source_path = source_client.get_existing_path(key)
                 target_client.copy_from_path(key, source_path)
-            elif source_type == "local" and target_type == "s3":
-                target_bucket = self.get_bucket(target_tier)
-                with source_client.open_for_read(key) as fh:
-                    if hasattr(target_client, "upload_fileobj"):
-                        target_client.upload_fileobj(fh, target_bucket, key)
-                    else:
-                        target_client.put_object(Bucket=target_bucket, Key=key, Body=fh)
-            elif source_type == "s3" and target_type == "local":
-                source_bucket = self.get_bucket(source_tier)
-                with target_client.open_for_write(key) as dest:
-                    if hasattr(source_client, "download_fileobj"):
-                        source_client.download_fileobj(Bucket=source_bucket, Key=key, Fileobj=dest)
-                    else:
-                        import shutil
-                        response = source_client.get_object(Bucket=source_bucket, Key=key)
-                        shutil.copyfileobj(response["Body"], dest)
-            else:
-                source_bucket = self.get_bucket(source_tier)
-                target_bucket = self.get_bucket(target_tier)
-                if source_bucket == target_bucket:
-                    logger.info(f"Simulated replication: {key} from {source_tier} to {target_tier}")
-                    return True
-                copy_source = {"Bucket": source_bucket, "Key": key}
-                target_client.copy_object(CopySource=copy_source, Bucket=target_bucket, Key=key)
+                return
 
-            logger.info(f"Successfully replicated {key} from {source_tier} to {target_tier}")
-            return True
-        except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError, OSError) as e:
-            logger.error(f"Failed to replicate {key} from {source_tier} to {target_tier}: {e}")
-            return False
+            target_bucket = self.get_bucket(target_tier)
+            with source_client.open_for_read(key) as fh:
+                self._upload_stream_to_s3(target_client, target_bucket, key, fh)
+            return
+
+        source_bucket = self.get_bucket(source_tier)
+
+        if target_type == "local":
+            with target_client.open_for_write(key) as dest:
+                self._download_s3_to_stream(source_client, source_bucket, key, dest)
+            return
+
+        target_bucket = self.get_bucket(target_tier)
+        if source_type == "s3" and target_type == "s3" and source_bucket == target_bucket:
+            logger.info(f"Simulated replication: {key} from {source_tier} to {target_tier}")
+            return
+
+        response = source_client.get_object(Bucket=source_bucket, Key=key)
+        with closing(response["Body"]) as body:
+            self._upload_stream_to_s3(target_client, target_bucket, key, body)
+
+    def _read_chunk(self, stream) -> bytes:
+        chunk = stream.read(self.chunk_size)
+        if not chunk:
+            return b""
+        if isinstance(chunk, bytes):
+            return chunk
+        return bytes(chunk)
+
+    def _iter_additional_chunks(self, stream):
+        while True:
+            chunk = self._read_chunk(stream)
+            if not chunk:
+                break
+            yield chunk
+
+    def _upload_stream_to_s3(self, client, bucket: str, key: str, stream) -> None:
+        first_chunk = self._read_chunk(stream)
+        if not first_chunk:
+            client.put_object(Bucket=bucket, Key=key, Body=b"")
+            return
+
+        second_chunk = self._read_chunk(stream)
+        if not second_chunk:
+            client.put_object(Bucket=bucket, Key=key, Body=first_chunk)
+            return
+
+        upload = client.create_multipart_upload(Bucket=bucket, Key=key)
+        upload_id = upload["UploadId"]
+        parts: List[Dict[str, Any]] = []
+        part_number = 1
+
+        def _chunk_iterator():
+            yield first_chunk
+            yield second_chunk
+            yield from self._iter_additional_chunks(stream)
+
+        try:
+            for chunk in _chunk_iterator():
+                response = client.upload_part(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=chunk,
+                )
+                parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
+                part_number += 1
+            client.complete_multipart_upload(
+                Bucket=bucket,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+            )
+        except Exception:
+            if hasattr(client, "abort_multipart_upload"):
+                with suppress(Exception):
+                    client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            raise
+
+    def _download_s3_to_stream(self, client, bucket: str, key: str, dest_stream) -> None:
+        if hasattr(client, "download_fileobj"):
+            client.download_fileobj(Bucket=bucket, Key=key, Fileobj=dest_stream)
+            return
+
+        response = client.get_object(Bucket=bucket, Key=key)
+        with closing(response["Body"]) as body:
+            for chunk in self._iter_additional_chunks(body):
+                dest_stream.write(chunk)
 
     def replicate_to_tiers(self, key: str, subscription_type: str, source_tier: str = "main", original_file=None, db=None) -> Dict[str, bool]:
         targets = self.get_replication_targets(subscription_type, source_tier)
