@@ -223,7 +223,10 @@ class MultiCloudS3:
 
         response = client.get_object(Bucket=bucket, Key=key)
         with closing(response["Body"]) as body:
-            for chunk in self._iter_additional_chunks(body):
+            while True:
+                chunk = self._read_chunk(body)
+                if not chunk:
+                    break
                 dest_stream.write(chunk)
 
     def replicate_to_tiers(self, key: str, subscription_type: str, source_tier: str = "main", original_file=None, db=None) -> Dict[str, bool]:
