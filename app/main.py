@@ -12,6 +12,7 @@ from .routers.trash import router as trash_router
 from .routers.storage import router as storage_router
 from .routers.admin_ui import router as admin_ui_router
 from .routers.invite import router as invite_router
+from .s3 import has_local_backend
 
 app = FastAPI(title="Museum-subset (FastAPI) with S3 presign, sessions, trash")
 
@@ -27,6 +28,10 @@ app.include_router(trash_router)
 app.include_router(storage_router)
 app.include_router(admin_ui_router)
 app.include_router(invite_router)
+if has_local_backend():
+    from .routers.local_storage import router as local_storage_router
+
+    app.include_router(local_storage_router)
 
 @app.get("/ping")
 def ping():

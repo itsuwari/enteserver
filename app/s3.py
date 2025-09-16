@@ -1,12 +1,15 @@
 from __future__ import annotations
+
 import boto3
 import logging
 from typing import Optional, Dict, Any, List
+from urllib.parse import urljoin
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
+from .local_s3 import LocalS3Client, LocalS3Error
 
 logger = logging.getLogger(__name__)
 
@@ -16,28 +19,40 @@ class MultiCloudS3:
     def __init__(self):
         self.clients: Dict[str, Any] = {}
         self.buckets: Dict[str, str] = {}
+        self.backend_types: Dict[str, str] = {}
         self._init_backends()
 
     def _init_backends(self) -> None:
         backends = settings.s3_backends or {}
         if backends:
             for name, cfg in backends.items():
-                bucket = cfg.get("bucket", settings.s3_bucket)
-                if not bucket:
-                    raise ValueError(f"No bucket configured for backend '{name}'")
-                client = boto3.client(
-                    "s3",
-                    aws_access_key_id=cfg.get("access_key", settings.s3_access_key),
-                    aws_secret_access_key=cfg.get("secret_key", settings.s3_secret_key),
-                    endpoint_url=cfg.get("endpoint_url", settings.s3_endpoint_url),
-                    region_name=cfg.get("region", settings.s3_region),
-                    config=BotoConfig(
-                        signature_version="s3v4",
-                        s3={"addressing_style": "path" if settings.s3_use_path_style else "virtual"},
-                    ),
-                )
+                backend_type = (cfg.get("type") or "s3").lower()
+                if backend_type == "local":
+                    base_path = cfg.get("base_path")
+                    if not base_path:
+                        raise ValueError(f"Local backend '{name}' requires 'base_path'")
+                    base_url = cfg.get("base_url") or cfg.get("url")
+                    secret = cfg.get("secret") or settings.jwt_secret
+                    client = LocalS3Client(name=name, base_path=base_path, base_url=base_url, secret=secret)
+                    bucket = cfg.get("bucket") or name
+                else:
+                    bucket = cfg.get("bucket", settings.s3_bucket)
+                    if not bucket:
+                        raise ValueError(f"No bucket configured for backend '{name}'")
+                    client = boto3.client(
+                        "s3",
+                        aws_access_key_id=cfg.get("access_key", settings.s3_access_key),
+                        aws_secret_access_key=cfg.get("secret_key", settings.s3_secret_key),
+                        endpoint_url=cfg.get("endpoint_url", settings.s3_endpoint_url),
+                        region_name=cfg.get("region", settings.s3_region),
+                        config=BotoConfig(
+                            signature_version="s3v4",
+                            s3={"addressing_style": "path" if settings.s3_use_path_style else "virtual"},
+                        ),
+                    )
                 self.clients[name] = client
                 self.buckets[name] = bucket
+                self.backend_types[name] = backend_type
         else:
             if not settings.s3_bucket:
                 raise ValueError("No S3 backend configured. Set 's3_bucket' or define 's3_backends'.")
@@ -54,6 +69,7 @@ class MultiCloudS3:
             )
             self.clients["main"] = client
             self.buckets["main"] = settings.s3_bucket
+            self.backend_types["main"] = "s3"
 
     def get_client(self, tier: str = "main"):
         return self.clients[tier]
@@ -61,26 +77,52 @@ class MultiCloudS3:
     def get_bucket(self, tier: str = "main") -> str:
         return self.buckets[tier]
 
+    def get_backend_type(self, tier: str) -> str:
+        return self.backend_types.get(tier, "s3")
+
     def get_replication_targets(self, subscription_type: str, source_tier: str) -> List[str]:
         return [t for t in self.clients.keys() if t != source_tier]
 
     def copy_object_between_buckets(self, key: str, source_tier: str, target_tier: str) -> bool:
         try:
-            source_bucket = self.get_bucket(source_tier)
-            target_bucket = self.get_bucket(target_tier)
             source_client = self.get_client(source_tier)
             target_client = self.get_client(target_tier)
+            source_type = self.get_backend_type(source_tier)
+            target_type = self.get_backend_type(target_tier)
 
-            if source_bucket == target_bucket:
-                logger.info(f"Simulated replication: {key} from {source_tier} to {target_tier}")
-                return True
-
-            copy_source = {"Bucket": source_bucket, "Key": key}
-            target_client.copy_object(CopySource=copy_source, Bucket=target_bucket, Key=key)
+            if source_type == "local" and target_type == "local":
+                if source_client.base_path == target_client.base_path:
+                    logger.info(f"Simulated replication: {key} within {source_tier} (same storage root)")
+                    return True
+                source_path = source_client.get_existing_path(key)
+                target_client.copy_from_path(key, source_path)
+            elif source_type == "local" and target_type == "s3":
+                target_bucket = self.get_bucket(target_tier)
+                with source_client.open_for_read(key) as fh:
+                    if hasattr(target_client, "upload_fileobj"):
+                        target_client.upload_fileobj(fh, target_bucket, key)
+                    else:
+                        target_client.put_object(Bucket=target_bucket, Key=key, Body=fh.read())
+            elif source_type == "s3" and target_type == "local":
+                source_bucket = self.get_bucket(source_tier)
+                with target_client.open_for_write(key) as dest:
+                    if hasattr(source_client, "download_fileobj"):
+                        source_client.download_fileobj(Bucket=source_bucket, Key=key, Fileobj=dest)
+                    else:
+                        body = source_client.get_object(Bucket=source_bucket, Key=key)["Body"].read()
+                        dest.write(body)
+            else:
+                source_bucket = self.get_bucket(source_tier)
+                target_bucket = self.get_bucket(target_tier)
+                if source_bucket == target_bucket:
+                    logger.info(f"Simulated replication: {key} from {source_tier} to {target_tier}")
+                    return True
+                copy_source = {"Bucket": source_bucket, "Key": key}
+                target_client.copy_object(CopySource=copy_source, Bucket=target_bucket, Key=key)
 
             logger.info(f"Successfully replicated {key} from {source_tier} to {target_tier}")
             return True
-        except (BotoCoreError, ClientError) as e:
+        except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError, OSError) as e:
             logger.error(f"Failed to replicate {key} from {source_tier} to {target_tier}: {e}")
             return False
 
@@ -146,10 +188,12 @@ def presign_get(key: str, response_filename: str | None = None, expires: int | N
                 ExpiresIn=expires or settings.s3_presign_expiry,
                 HttpMethod="GET",
             )
-        except (BotoCoreError, ClientError) as e:
+        except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError) as e:
             if isinstance(e, ClientError):
                 if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
                     logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
+            elif not isinstance(e, FileNotFoundError):
+                logger.warning(f"Error checking object '{key}' in tier '{fallback_tier}': {e}")
             continue
     raise FileNotFoundError(f"Object '{key}' not found in any configured tier")
 
@@ -182,7 +226,7 @@ def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> 
             try:
                 _client(t).delete_object(Bucket=_bucket(t), Key=key)
                 logger.info(f"Deleted {key} from {t} tier")
-            except (BotoCoreError, ClientError) as e:
+            except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError) as e:
                 logger.warning(f"Failed to delete {key} from {t} tier: {e}")
                 success = False
     else:
@@ -190,7 +234,7 @@ def delete_object(key: str, tier: str | None = None, all_tiers: bool = True) -> 
             raise ValueError("'tier' must be specified when all_tiers is False")
         try:
             _client(tier).delete_object(Bucket=_bucket(tier), Key=key)
-        except (BotoCoreError, ClientError) as e:
+        except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError) as e:
             logger.warning(f"Failed to delete {key} from {tier} tier: {e}")
             success = False
     return success
@@ -204,7 +248,7 @@ def get_object_info(key: str, tier: str = "main") -> Optional[Dict[str, Any]]:
             "last_modified": response.get("LastModified"),
             "content_type": response.get("ContentType"),
         }
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, LocalS3Error, FileNotFoundError):
         return None
 
 def replicate_object(key: str, source_tier: str, target_tier: str) -> bool:
@@ -222,3 +266,41 @@ def head_object_size_and_etag(key: str) -> tuple[Optional[int], Optional[str]]:
         if info:
             return info["size"], info["etag"]
     return None, None
+
+
+def object_storage_available() -> bool:
+    if has_local_backend():
+        return True
+    return settings.s3_enabled and bool(_multicloud_s3.clients)
+
+
+def has_local_backend() -> bool:
+    return any(isinstance(client, LocalS3Client) for client in _multicloud_s3.clients.values())
+
+
+def get_local_client(tier: str) -> LocalS3Client | None:
+    client = _multicloud_s3.clients.get(tier)
+    if isinstance(client, LocalS3Client):
+        return client
+    return None
+
+
+def resolve_presigned_url(url: str, base_url: str | None) -> str:
+    """Ensure that presigned URLs are absolute when routed via FastAPI.
+
+    Local backends emit relative URLs (``/local-storage/...``) so that they can
+    be reverse proxied behind the API server.  Frontend clients, however, expect
+    absolute URLs.  When a ``base_url`` is provided (typically derived from the
+    incoming request), upgrade the relative URL to an absolute one that reuses
+    the same host/port as the API.  Remote S3 URLs are already absolute and are
+    returned as-is.
+    """
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if not base_url:
+        return url
+
+    normalized_base = base_url if base_url.endswith("/") else base_url + "/"
+    # ``urljoin`` correctly handles query strings and relative paths.
+    return urljoin(normalized_base, url.lstrip("/"))
