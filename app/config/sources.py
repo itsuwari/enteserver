@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Type
 
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - fallback for Python <3.11
+    import tomli as tomllib  # type: ignore
 from pydantic import BaseModel
 
 

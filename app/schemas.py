@@ -38,6 +38,80 @@ class SRPLoginResponse(CamelModel):
     token_type: str = "bearer"
     expires_in: int | None = Field(default=None, alias="expiresIn")
 
+# OTT (One-Time-Token) Email Verification
+class SendOTTRequest(CamelModel):
+    email: str
+    purpose: str | None = None  # "signup", "login", "change", etc.
+    mobile: bool = False
+
+class EmailVerificationRequest(CamelModel):
+    email: str
+    ott: str
+    source: str | None = None  # Referral source
+
+class EmailVerificationResponse(CamelModel):
+    id: int
+    token: str
+    key_attributes: dict | None = Field(default=None, alias="keyAttributes")
+    subscription: dict | None = None
+
+# New SRP Endpoints (Ente-compatible)
+class SRPAttributesRequest(CamelModel):
+    email: str
+
+class SRPAttributesResponse(CamelModel):
+    attributes: "SRPAttributes"
+
+class SRPAttributes(CamelModel):
+    srp_user_id: str = Field(alias="srpUserID")
+    srp_salt: str = Field(alias="srpSalt")
+    mem_limit: int = Field(alias="memLimit")
+    ops_limit: int = Field(alias="opsLimit")
+    kek_salt: str = Field(alias="kekSalt")
+    is_email_mfa_enabled: bool = Field(alias="isEmailMFAEnabled")
+
+class SetupSRPRequest(CamelModel):
+    srp_user_id: str = Field(alias="srpUserID")
+    srp_salt: str = Field(alias="srpSalt")
+    srp_verifier: str = Field(alias="srpVerifier")
+    srp_a: str = Field(alias="srpA")
+    is_update: bool = Field(default=False, alias="isUpdate")
+
+class SetupSRPResponse(CamelModel):
+    setup_id: str = Field(alias="setupID")
+    srp_b: str = Field(alias="srpB")
+
+class CompleteSRPSetupRequest(CamelModel):
+    setup_id: str = Field(alias="setupID")
+    srp_m1: str = Field(alias="srpM1")
+
+class CompleteSRPSetupResponse(CamelModel):
+    setup_id: str = Field(alias="setupID")
+    srp_m2: str = Field(alias="srpM2")
+
+class CreateSRPSessionRequest(CamelModel):
+    srp_user_id: str = Field(alias="srpUserID")
+    srp_a: str = Field(alias="srpA")
+
+class CreateSRPSessionResponse(CamelModel):
+    session_id: str = Field(alias="sessionID")
+    srp_b: str = Field(alias="srpB")
+
+class VerifySRPSessionRequest(CamelModel):
+    session_id: str = Field(alias="sessionID")
+    srp_user_id: str = Field(alias="srpUserID")
+    srp_m1: str = Field(alias="srpM1")
+
+class VerifySRPSessionResponse(CamelModel):
+    srp_m2: str = Field(alias="srpM2")
+    id: int
+    token: str | None = None
+    key_attributes: dict | None = Field(default=None, alias="keyAttributes")
+    subscription: dict | None = None
+    encrypted_token: str | None = Field(default=None, alias="encryptedToken")
+    two_factor_session_id: str | None = Field(default=None, alias="twoFactorSessionID")
+    passkey_session_id: str | None = Field(default=None, alias="passkeySessionID")
+
 class SessionInfo(CamelModel):
     id: int
     created_at: dt.datetime | None = Field(default=None, alias="createdAt")

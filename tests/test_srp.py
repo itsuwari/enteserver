@@ -287,3 +287,131 @@ def test_srp_verifier_email_formats(email, password):
     salt2 = SRPHelper.generate_salt()
     verifier2 = SRPHelper.generate_verifier("different@example.com", password, salt2)
     assert verifier != verifier2
+
+
+def test_srp_auth_flow_basic():
+    """Test basic SRP authentication flow setup."""
+    import os
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import tempfile
+
+    # Create a temporary database for this test
+    db_fd, db_path = tempfile.mkstemp()
+    try:
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(bind=engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+        # Set up environment
+        os.environ['DATABASE_URL'] = f"sqlite:///{db_path}"
+        os.environ['JWT_SECRET'] = 'test-jwt-secret-12345'
+
+        # Import after environment setup
+        from app.main import app
+        client = TestClient(app)
+
+        # Create a test user
+        db = SessionLocal()
+        email = "srp-test@example.com"
+        password = "test-password-123"
+
+        salt = SRPHelper.generate_salt()
+        verifier = SRPHelper.generate_verifier(email, password, salt)
+
+        user = User(email=email, srp_salt=salt, srp_verifier=verifier)
+        db.add(user)
+        db.commit()
+
+        # Test 1: SRP challenge request
+        client_a = "1234567890abcdef" * 16  # Mock client public key A
+
+        response = client.post("/users/srp/challenge", json={
+            "email": email,
+            "srpA": client_a
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "srpSalt" in data
+        assert "srpB" in data
+        assert data["srpSalt"] == salt
+
+        print("✓ SRP challenge endpoint works")
+
+        # Test 2: Invalid user challenge
+        response = client.post("/users/srp/challenge", json={
+            "email": "nonexistent@example.com",
+            "srpA": client_a
+        })
+
+        assert response.status_code == 401
+        assert "User not found" in response.json()["detail"]
+
+        print("✓ SRP challenge properly rejects invalid users")
+
+        db.close()
+
+    finally:
+        os.close(db_fd)
+        os.unlink(db_path)
+
+
+def test_invite_creates_srp_user():
+    """Test that accepting an invite creates SRP user instead of bcrypt."""
+    import os
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import tempfile
+
+    db_fd, db_path = tempfile.mkstemp()
+    try:
+        engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(bind=engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+        os.environ['DATABASE_URL'] = f"sqlite:///{db_path}"
+        os.environ['JWT_SECRET'] = 'test-jwt-secret-12345'
+
+        from app.main import app
+        client = TestClient(app)
+
+        # First create an invite
+        db = SessionLocal()
+
+        from app.models import UserInvite
+        from uuid import uuid4
+        invite = UserInvite(
+            email="invited@example.com",
+            token=str(uuid4()),
+        )
+        db.add(invite)
+        db.commit()
+
+        # Accept the invite
+        response = client.post("/invite/accept", json={
+            "token": invite.token,
+            "password": "invite-password-123"
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "authToken" in data
+
+        print("✓ Invite acceptance works")
+
+        # Check user was created with SRP
+        user = db.query(User).filter(User.email == "invited@example.com").first()
+        assert user is not None
+        assert user.srp_salt is not None
+        assert user.srp_verifier is not None
+        assert len(user.srp_salt) == 32  # hex encoded 16 bytes
+        assert len(user.srp_verifier) == 256  # hex encoded
+
+        print("✓ User created with SRP parameters")
+
+        db.close()
+
+    finally:
+        os.close(db_fd)

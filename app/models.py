@@ -11,8 +11,13 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
 
     # SRP authentication (Ente-compatible)
+    srp_user_id = Column(String, nullable=True)  # SRP user identifier (usually email)
     srp_salt = Column(String, nullable=True)  # SRP salt used in verifier generation
     srp_verifier = Column(String, nullable=True)  # SRP verifier for zero-knowledge auth
+    kek_salt = Column(String, nullable=True)  # Key encryption key salt
+    mem_limit = Column(Integer, default=67108864)  # Argon2 memory limit (64MB default)
+    ops_limit = Column(Integer, default=3)  # Argon2 operations limit
+    is_email_mfa_enabled = Column(Boolean, default=False)  # Email MFA status
 
     # Legacy password support (remove after SRP migration)
     password_hash = Column(String, nullable=True)
@@ -165,3 +170,40 @@ class UserInvite(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
     consumed = Column(Boolean, default=False)
+
+
+class OneTimeToken(Base):
+    """
+    OTT (One-Time-Token) for email verification during signup/login
+    Compatible with Ente mobile clients
+    """
+    __tablename__ = "one_time_tokens"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, nullable=False, index=True)
+    ott = Column(String, nullable=False)  # 6-digit code
+    purpose = Column(String, nullable=True)  # "signup", "login", "change", etc.
+    attempts = Column(Integer, default=0)  # Rate limiting
+    max_attempts = Column(Integer, default=3)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)  # Usually 10 minutes from creation
+
+
+class SRPSession(Base):
+    """
+    SRP session storage for proper SRP-6a protocol implementation
+    Compatible with Ente mobile clients
+    """
+    __tablename__ = "srp_sessions" 
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, unique=True, nullable=False, index=True)
+    setup_id = Column(String, unique=True, nullable=True, index=True)  # For setup flow
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    srp_user_id = Column(String, nullable=False)  # Usually email
+    srp_a = Column(String, nullable=False)  # Client's public ephemeral value
+    srp_b = Column(String, nullable=False)  # Server's public ephemeral value  
+    srp_b_private = Column(String, nullable=False)  # Server's private ephemeral value
+    srp_s = Column(String, nullable=True)  # Shared secret (computed during verification)
+    is_verified = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)  # Usually 5 minutes from creation
