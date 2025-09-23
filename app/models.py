@@ -9,8 +9,14 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True, nullable=False, index=True)
-    password_hash = Column(String, nullable=False)
-    
+
+    # SRP authentication (Ente-compatible)
+    srp_salt = Column(String, nullable=True)  # SRP salt used in verifier generation
+    srp_verifier = Column(String, nullable=True)  # SRP verifier for zero-knowledge auth
+
+    # Legacy password support (remove after SRP migration)
+    password_hash = Column(String, nullable=True)
+
     # Encryption keys for E2EE
     encrypted_master_key = Column(Text, nullable=True)
     master_key_recovery_key = Column(Text, nullable=True)

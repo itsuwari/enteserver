@@ -8,12 +8,33 @@ class CamelModel(BaseModel):
 
 # ---- Auth
 
+# Legacy login (remove after SRP migration)
 class LoginRequest(CamelModel):
     email: str
     password: str
 
 class LoginResponse(CamelModel):
     auth_token: str = Field(alias="authToken")
+    token_type: str = "bearer"
+    expires_in: int | None = Field(default=None, alias="expiresIn")
+
+# SRP Authentication (Ente-compatible)
+class SRPChallengeRequest(CamelModel):
+    email: str
+    srp_a: str = Field(alias="srpA")  # Client's public key A
+
+class SRPChallengeResponse(CamelModel):
+    srp_salt: str = Field(alias="srpSalt")
+    srp_b: str = Field(alias="srpB")  # Server's public key B
+
+class SRPLoginRequest(CamelModel):
+    email: str
+    srp_a: str = Field(alias="srpA")  # Client's public key A
+    srp_m1: str = Field(alias="srpM1")  # Client's proof M1
+
+class SRPLoginResponse(CamelModel):
+    srp_m2: str = Field(alias="srpM2")  # Server's proof M2
+    auth_token: str = Field(alias="authToken")  # JWT after SRP verification
     token_type: str = "bearer"
     expires_in: int | None = Field(default=None, alias="expiresIn")
 

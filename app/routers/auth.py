@@ -4,10 +4,11 @@ import datetime as dt, secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from ..db import get_db
-from ..schemas import LoginRequest, LoginResponse, SessionInfo, RevokeOthersResponse, DeleteResponse
+from ..schemas import LoginRequest, LoginResponse, SessionInfo, RevokeOthersResponse, DeleteResponse, SRPChallengeRequest, SRPChallengeResponse, SRPLoginRequest, SRPLoginResponse
 from ..models import User, UserSession
 from ..config import settings
 from ..security import hash_password, verify_password, create_token, get_auth
+from ..srp import SRPHelper
 
 router = APIRouter(prefix="/users", tags=["auth"])
 
@@ -33,6 +34,57 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     exp_seconds = settings.jwt_exp_hours * 3600
     token = create_token(user.id, extra={"jti": jti})
     return LoginResponse(auth_token=token, expires_in=exp_seconds)
+
+# SRP Authentication Endpoints (Ente-compatible)
+@router.post("/srp/challenge", response_model=SRPChallengeResponse)
+def srp_challenge(payload: SRPChallengeRequest, request: Request, db: Session = Depends(get_db)):
+    """Step 1: Client sends A, server responds with salt and B"""
+    _bootstrap(db)
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not user.srp_salt or not user.srp_verifier:
+        raise HTTPException(status_code=401, detail="User not found or not SRP-enabled")
+
+    # Create server challenge with client's A
+    challenge = SRPHelper.create_server_challenge(
+        payload.email, payload.srp_a, user.srp_verifier, user.srp_salt
+    )
+
+    return SRPChallengeResponse(srp_salt=challenge['salt'], srp_b=challenge['server_B'])
+
+@router.post("/srp/login", response_model=SRPLoginResponse)
+def srp_login(payload: SRPLoginRequest, request: Request, db: Session = Depends(get_db)):
+    """Step 2: Client sends A, M1, server verifies and returns M2 + JWT"""
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not user.srp_salt or not user.srp_verifier:
+        raise HTTPException(status_code=401, detail="User not found or not SRP-enabled")
+
+    # Verify client's proof
+    verification = SRPHelper.verify_client_auth(
+        payload.email, payload.srp_a, payload.srp_m1, "server_b_placeholder", user.srp_verifier, user.srp_salt
+    )
+
+    if not verification['verified']:
+        raise HTTPException(status_code=401, detail="SRP authentication failed")
+
+    # Create session and JWT token
+    jti = secrets.token_urlsafe(12)
+    ip = request.headers.get('X-Forwarded-For') or (request.client.host if request.client else None)
+    ua = request.headers.get('User-Agent')
+    cp = request.headers.get('X-Client-Package')
+    cv = request.headers.get('X-Client-Version')
+
+    sess = UserSession(user_id=user.id, jti=jti, ip=ip, user_agent=ua, client_package=cp, client_version=cv)
+    db.add(sess)
+    db.commit()
+
+    exp_seconds = settings.jwt_exp_hours * 3600
+    token = create_token(user.id, extra={"jti": jti})
+
+    return SRPLoginResponse(
+        srp_m2=verification['server_proof'],
+        auth_token=token,
+        expires_in=exp_seconds
+    )
 
 @router.get("/sessions")
 def sessions(db: Session = Depends(get_db), ctx=Depends(get_auth)):
