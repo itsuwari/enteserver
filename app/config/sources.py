@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Type
 
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover - fallback for Python <3.11
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - fallback for Python <3.11
     import tomli as tomllib  # type: ignore
+
 from pydantic import BaseModel
 
 
