@@ -26,3 +26,14 @@ base_path = "./object-storage"
 # Optional override for presigned URLs. When omitted the API host/port is used
 # automatically so local storage stays behind the same FastAPI server.
 # base_url = "http://localhost:8000"
+
+[file_share]
+# Optional template for generated file share URLs. Include `{token}` where the
+# randomly generated access token should be substituted.
+# url_template = "https://share.example.com/file/?t={token}"
+
+  [file_share.urls]
+  # Per-app overrides for specific clients (keys should match the `app` value
+  # provided by the API caller, e.g. `photos` or `locker`).
+  # photos = "https://photos.example.com/file/?t={token}"
+  # locker = "https://locker.example.com/file/?t={token}"

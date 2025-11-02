@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 import datetime as dt
+from enum import Enum
 from pydantic import BaseModel, Field
 
 class CamelModel(BaseModel):
@@ -146,6 +147,15 @@ class MultipartUploadURLs(CamelModel):
 class MultipartUploadURLsResponse(CamelModel):
     urls: list[MultipartUploadURLs]
 
+class UploadURLV2Request(CamelModel):
+    content_length: int = Field(alias="contentLength")
+    content_md5: str = Field(alias="contentMD5")
+
+class MultipartUploadURLV2Request(CamelModel):
+    content_length: int = Field(alias="contentLength")
+    part_length: int = Field(alias="partLength")
+    part_md5s: list[str] = Field(alias="partMd5s")
+
 class MultipartCompleteItem(CamelModel):
     part_number: int = Field(alias="partNumber")
     e_tag: str = Field(alias="eTag")
@@ -189,6 +199,16 @@ class FileCreate(CamelModel):
     mime_type: str | None = Field(default=None, alias="mimeType")
     sha256: str | None = None
 
+
+class MetaFileCreate(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    encrypted_key: str = Field(alias="encryptedKey")
+    key_decryption_nonce: str = Field(alias="keyDecryptionNonce")
+    metadata: EncryptedMetadata
+    magic_metadata: MagicMetadata | None = Field(default=None, alias="magicMetadata")
+    pub_magic_metadata: PubMagicMetadata | None = Field(default=None, alias="pubMagicMetadata")
+
+
 class FileUpdate(CamelModel):
     file_id: int = Field(alias="fileId")
     collection_id: int | None = Field(default=None, alias="collectionID")
@@ -229,6 +249,98 @@ class FileInfoItem(CamelModel):
 class FilesInfoResponse(CamelModel):
     files: list[FileInfoItem]
 
+
+# ---- File Data
+
+
+class CollectionFileItemRequest(CamelModel):
+    id: int
+    encrypted_key: str = Field(alias="encryptedKey")
+    key_decryption_nonce: str = Field(alias="keyDecryptionNonce")
+
+
+class FileCopyRequest(CamelModel):
+    src_collection_id: int = Field(alias="srcCollectionID")
+    dst_collection_id: int = Field(alias="dstCollectionID")
+    files: list[CollectionFileItemRequest]
+
+
+class FileCopyResponse(CamelModel):
+    old_to_new_file_id_map: dict[str, int] = Field(alias="oldToNewFileIDMap")
+
+class FileDataType(str, Enum):
+    ML_DATA = "mldata"
+    VID_PREVIEW = "vid_preview"
+
+
+class FileDataPutRequest(CamelModel):
+    file_id: int = Field(alias="fileID")
+    type: FileDataType
+    encrypted_data: str | None = Field(default=None, alias="encryptedData")
+    decryption_header: str | None = Field(default=None, alias="decryptionHeader")
+    version: int | None = None
+    last_updated_at: int | None = Field(default=None, alias="lastUpdatedAt")
+
+
+class FileDataItem(CamelModel):
+    file_id: int = Field(alias="fileID")
+    type: FileDataType
+    encrypted_data: str = Field(alias="encryptedData")
+    decryption_header: str = Field(alias="decryptionHeader")
+    updated_at: int = Field(alias="updatedAt")
+
+
+class FileDataFetchRequest(CamelModel):
+    file_ids: list[int] = Field(alias="fileIDs")
+    type: FileDataType
+
+
+class FileDataFetchResponse(CamelModel):
+    data: list[FileDataItem]
+    pending_index_file_ids: list[int] = Field(default_factory=list, alias="pendingIndexFileIDs")
+    err_file_ids: list[int] = Field(default_factory=list, alias="errFileIDs")
+
+
+class FileDataDiffRequest(CamelModel):
+    last_updated_at: int = Field(alias="lastUpdatedAt")
+
+
+class FileDataDiffItem(CamelModel):
+    file_id: int = Field(alias="fileID")
+    type: FileDataType
+    is_deleted: bool = Field(alias="isDeleted")
+    object_id: str | None = Field(default=None, alias="objectID")
+    object_size: int | None = Field(default=None, alias="objectSize")
+    updated_at: int = Field(alias="updatedAt")
+
+
+class FileDataDiffResponse(CamelModel):
+    diff: list[FileDataDiffItem]
+
+
+class FileDataGetQuery(CamelModel):
+    file_id: int = Field(alias="fileID")
+    type: FileDataType
+    prefer_no_content: bool | None = Field(default=None, alias="preferNoContent")
+
+
+class FilePreviewFetchQuery(CamelModel):
+    file_id: int = Field(alias="fileID")
+    type: FileDataType
+
+
+class FilePreviewResponse(CamelModel):
+    url: str
+
+
+class VideoDataRequest(CamelModel):
+    file_id: int = Field(alias="fileID")
+    object_id: str = Field(alias="objectID")
+    object_size: int = Field(alias="objectSize")
+    playlist: str
+    playlist_header: str = Field(alias="playlistHeader")
+    version: int | None = None
+
 class UpdateThumbnailRequest(CamelModel):
     file_id: int = Field(alias="fileId")
     object_key: str = Field(alias="objectKey")
@@ -239,6 +351,36 @@ class UpdateMultipleMagicMetadataItem(CamelModel):
 
 class UpdateMultipleMagicMetadataRequest(CamelModel):
     items: list[UpdateMultipleMagicMetadataItem]
+
+class FileShareCreateRequest(CamelModel):
+    file_id: int = Field(alias="fileID")
+    app: str = "photos"
+
+class FileShareUpdateRequest(CamelModel):
+    link_id: str = Field(alias="linkID")
+    file_id: int = Field(alias="fileID")
+    valid_till: int | None = Field(default=None, alias="validTill")
+    device_limit: int | None = Field(default=None, alias="deviceLimit")
+    pass_hash: str | None = Field(default=None, alias="passHash")
+    nonce: str | None = None
+    mem_limit: int | None = Field(default=None, alias="memLimit")
+    ops_limit: int | None = Field(default=None, alias="opsLimit")
+    enable_download: bool | None = Field(default=None, alias="enableDownload")
+    disable_password: bool | None = Field(default=None, alias="disablePassword")
+
+class FileShareResponse(CamelModel):
+    link_id: str = Field(alias="linkID")
+    url: str
+    owner_id: int = Field(alias="ownerID")
+    file_id: int = Field(alias="fileID")
+    valid_till: int = Field(alias="validTill")
+    device_limit: int = Field(alias="deviceLimit")
+    password_enabled: bool = Field(alias="passwordEnabled")
+    nonce: str | None = None
+    mem_limit: int | None = Field(default=None, alias="memLimit")
+    ops_limit: int | None = Field(default=None, alias="opsLimit")
+    enable_download: bool = Field(alias="enableDownload")
+    created_at: int = Field(alias="createdAt")
 
 class PreviewURLResponse(CamelModel):
     url: str
@@ -298,6 +440,101 @@ class CollectionResponse(CamelModel):
     # Magic metadata
     magic_metadata: MagicMetadata | None = Field(default=None, alias="magicMetadata")
     pub_magic_metadata: PubMagicMetadata | None = Field(default=None, alias="pubMagicMetadata")
+
+
+class CollectionShareRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    email: str
+    encrypted_key: str | None = Field(default=None, alias="encryptedKey")
+    role: str | None = None
+
+
+class CollectionUnshareRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    email: str
+
+
+class CollectionJoinLinkRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    encrypted_key: str = Field(alias="encryptedKey")
+
+
+class ShareeResponse(CamelModel):
+    id: int | None = None
+    email: str
+    name: str | None = None
+    role: str | None = None
+
+
+class ShareesResponse(CamelModel):
+    sharees: list[ShareeResponse]
+
+
+class CollectionAddFilesRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    files: list[CollectionFileItemRequest]
+
+
+class CollectionMoveFilesRequest(CamelModel):
+    from_collection_id: int = Field(alias="fromCollectionID")
+    to_collection_id: int = Field(alias="toCollectionID")
+    files: list[CollectionFileItemRequest]
+
+
+class CollectionRemoveFilesRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    file_ids: list[int] = Field(alias="fileIDs")
+
+
+class CollectionRemoveFilesV3Request(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    file_ids: list[int] = Field(alias="fileIDs")
+
+
+class CollectionRenameRequest(CamelModel):
+    collection_id: int = Field(alias="collectionID")
+    encrypted_name: str = Field(alias="encryptedName")
+    name_decryption_nonce: str = Field(alias="nameDecryptionNonce")
+
+
+class CollectionMagicMetadataUpdateRequest(CamelModel):
+    id: int
+    magic_metadata: MagicMetadata = Field(alias="magicMetadata")
+
+
+class CollectionPublicURLAttributes(CamelModel):
+    device_limit: int | None = Field(default=None, alias="deviceLimit")
+    valid_till: int | None = Field(default=None, alias="validTill")
+    enable_download: bool | None = Field(default=None, alias="enableDownload")
+    enable_collect: bool | None = Field(default=None, alias="enableCollect")
+    enable_join: bool | None = Field(default=None, alias="enableJoin")
+    pass_hash: str | None = Field(default=None, alias="passHash")
+    nonce: str | None = None
+    mem_limit: int | None = Field(default=None, alias="memLimit")
+    ops_limit: int | None = Field(default=None, alias="opsLimit")
+
+
+class CollectionShareURLRequest(CollectionPublicURLAttributes):
+    collection_id: int = Field(alias="collectionID")
+
+
+class CollectionShareURLUpdateRequest(CollectionPublicURLAttributes):
+    collection_id: int = Field(alias="collectionID")
+    disable_password: bool | None = Field(default=None, alias="disablePassword")
+
+
+class CollectionShareURLResult(CamelModel):
+    url: str
+    device_limit: int = Field(alias="deviceLimit")
+    valid_till: int | None = Field(default=None, alias="validTill")
+    enable_download: bool = Field(alias="enableDownload")
+    enable_join: bool = Field(alias="enableJoin")
+    enable_collect: bool = Field(alias="enableCollect")
+    password_enabled: bool = Field(alias="passwordEnabled")
+    nonce: str | None = None
+    mem_limit: int | None = Field(default=None, alias="memLimit")
+    ops_limit: int | None = Field(default=None, alias="opsLimit")
+
 
 class PublicCollectionCreate(CamelModel):
     collection_id: int = Field(alias="collectionID")

@@ -63,3 +63,7 @@ class Settings(BaseModel):
     # Rate Limiting
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 60
+
+    # File share URL configuration
+    file_share_url_template: str | None = None
+    file_share_urls: dict[str, str] = Field(default_factory=dict)

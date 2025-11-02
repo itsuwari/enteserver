@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text, inspect
 from app.db import engine, Base
-from app.models import User, OneTimeToken, SRPSession
+from app.models import User, OneTimeToken, SRPSession, FileShareLink
 
 def check_column_exists(table_name: str, column_name: str) -> bool:
     """Check if a column exists in a table"""
@@ -60,6 +60,24 @@ def create_new_tables():
     # Create all tables (only creates missing ones)
     Base.metadata.create_all(bind=engine)
 
+
+def migrate_file_share_links():
+    """Ensure file_share_links table and schema exist"""
+    print("Checking file_share_links table...")
+    with engine.connect() as conn:
+        if not check_table_exists('file_share_links'):
+            print("  Creating file_share_links table")
+            Base.metadata.create_all(bind=engine, tables=[FileShareLink.__table__])
+            return
+        print("  Table file_share_links already exists")
+        if not check_column_exists('file_share_links', 'app'):
+            print("  Adding column: app")
+            conn.execute(text("ALTER TABLE file_share_links ADD COLUMN app VARCHAR NOT NULL DEFAULT 'photos'"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_file_share_links_app ON file_share_links (app)"))
+            conn.commit()
+        else:
+            print("  Column app already exists")
+
 def main():
     """Run all migrations"""
     print("Starting Ente compatibility migration...")
@@ -71,6 +89,9 @@ def main():
         
         # Step 2: Create new tables
         create_new_tables()
+
+        # Step 3: Ensure file share link support
+        migrate_file_share_links()
         
         print("\nMigration completed successfully!")
         print("\nNew features added:")
@@ -81,6 +102,7 @@ def main():
         print("- User.is_email_mfa_enabled: Email MFA flag")
         print("- OneTimeToken table: For OTT email verification") 
         print("- SRPSession table: For SRP protocol sessions")
+        print("- FileShareLink table: Public share links with app-specific URLs")
         
     except Exception as e:
         print(f"Migration failed: {e}")

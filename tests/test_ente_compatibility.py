@@ -4,6 +4,7 @@ Tests for new OTT and SRP endpoints to ensure mobile client compatibility
 """
 
 import pytest
+import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -12,8 +13,10 @@ import os
 
 from app.main import app
 from app.db import get_db, Base
-from app.models import User, OneTimeToken, SRPSession
+from app.models import User, OneTimeToken, SRPSession, File, FileShareLink
 from app.ott import OTTService
+from app.security import create_token
+from app.config import override
 
 
 # Create test database
@@ -52,6 +55,28 @@ def db_session(setup_test_db):
         yield db
     finally:
         db.close()
+
+def _create_user_with_token(db, email_prefix: str = "user"):
+    unique_email = f"{email_prefix}-{uuid.uuid4().hex[:8]}@example.com"
+    user = User(email=unique_email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = create_token(user.id)
+    return user, token
+
+def _create_file(db, owner_id: int) -> File:
+    file = File(
+        owner_id=owner_id,
+        file_object_key=f"{owner_id}/object-{uuid.uuid4().hex}",
+        size=1234,
+        sha256="sha256",
+        mime_type="image/jpeg",
+    )
+    db.add(file)
+    db.commit()
+    db.refresh(file)
+    return file
 
 
 class TestOTTEndpoints:
@@ -236,6 +261,106 @@ class TestSRPSetupEndpoints:
         
         # Expect failure due to mock data, but endpoint should exist
         assert response.status_code in [400, 401]  # Expected failure with mock data
+
+
+class TestFileShareEndpoints:
+    """Validate upload URL and share URL compatibility"""
+
+    def test_upload_url_v2(self, client, db_session):
+        user, token = _create_user_with_token(db_session, "upload")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Client-Package": "io.ente.photos",
+        }
+        payload = {"contentLength": 1024, "contentMD5": "d41d8cd98f00b204e9800998ecf8427e"}
+        response = client.post("/files/upload-url", json=payload, headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "objectKey" in data
+        assert data["objectKey"].startswith(str(user.id))
+        assert isinstance(data.get("url"), str)
+
+    def test_share_url_lifecycle(self, client, db_session):
+        user, token = _create_user_with_token(db_session, "share")
+        file = _create_file(db_session, user.id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        response = client.post("/files/share-url", json={"fileID": file.id, "app": "photos"}, headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["fileID"] == file.id
+        assert data["ownerID"] == user.id
+        link_id = data["linkID"]
+
+        # Repeated creation returns existing link
+        response_again = client.post("/files/share-url", json={"fileID": file.id, "app": "photos"}, headers=headers)
+        assert response_again.status_code == 200
+        assert response_again.json()["linkID"] == link_id
+
+        update_payload = {
+            "linkID": link_id,
+            "fileID": file.id,
+            "deviceLimit": 3,
+            "enableDownload": False,
+        }
+        update_response = client.put("/files/share-url", json=update_payload, headers=headers)
+        assert update_response.status_code == 200
+        updated = update_response.json()
+        assert updated["deviceLimit"] == 3
+        assert updated["enableDownload"] is False
+
+        diff_response = client.get(
+            "/files/share-urls",
+            params={"sinceTime": 0, "app": "photos"},
+            headers=headers,
+        )
+        assert diff_response.status_code == 200
+        diff_data = diff_response.json()
+        assert any(entry["linkID"] == link_id for entry in diff_data["diff"])
+
+        delete_response = client.delete(f"/files/share-url/{file.id}", headers=headers)
+        assert delete_response.status_code == 200
+        assert delete_response.json() == {}
+
+        empty_diff = client.get(
+            "/files/share-urls",
+            params={"sinceTime": 0, "app": "photos"},
+            headers=headers,
+        )
+        assert empty_diff.status_code == 200
+        assert empty_diff.json()["diff"] == []
+
+    def test_share_url_respects_template(self, client, db_session):
+        user, token = _create_user_with_token(db_session, "share-tpl")
+        file = _create_file(db_session, user.id)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Client-Package": "io.ente.photos",
+        }
+        template = "https://share.example.com/file/?t={token}"
+
+        with override(file_share_urls={"photos": template}):
+            response = client.post(
+                "/files/share-url",
+                json={"fileID": file.id, "app": "photos"},
+                headers=headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["url"].startswith("https://share.example.com/file/?t=")
+
+        link = (
+            db_session.query(FileShareLink)
+            .filter(
+                FileShareLink.file_id == file.id,
+                FileShareLink.owner_id == user.id,
+            )
+            .first()
+        )
+
+        assert link is not None
+        assert data["url"] == template.format(token=link.token)
 
 
 class TestEnteAPICompatibility:

@@ -271,10 +271,22 @@ def _bucket(tier: str = "main") -> str:
     """Get bucket name for specific tier"""
     return _multicloud_s3.get_bucket(tier)
 
-def presign_put(key: str, content_type: str | None = None, expires: int | None = None, tier: str = "main") -> str:
+def presign_put(
+    key: str,
+    content_type: str | None = None,
+    expires: int | None = None,
+    tier: str = "main",
+    *,
+    content_md5: str | None = None,
+    content_length: int | None = None,
+) -> str:
     params = {"Bucket": _bucket(tier), "Key": key}
     if content_type:
         params["ContentType"] = content_type
+    if content_md5:
+        params["ContentMD5"] = content_md5
+    if content_length is not None:
+        params["ContentLength"] = content_length
     return _client(tier).generate_presigned_url("put_object", Params=params, ExpiresIn=expires or settings.s3_presign_expiry, HttpMethod="PUT")
 
 def presign_get(key: str, response_filename: str | None = None, expires: int | None = None, tier: str = "main") -> str:

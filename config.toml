@@ -1,0 +1,13 @@
+jwt_secret = "dev-secret"
+admin_email = "admin@example.com"
+admin_password = "changeme"
+database_url = "sqlite:///./ente.db"
+
+[s3]
+enabled = true
+presign_expiry = 3600
+
+[s3.backends.main]
+type = "local"
+base_path = "./object-storage"
+base_url = "http://localhost:8000"

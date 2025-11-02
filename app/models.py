@@ -1,7 +1,17 @@
 
 from __future__ import annotations
 import datetime as dt
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    Text,
+    BigInteger,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from .db import Base
 
@@ -122,6 +132,28 @@ class File(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 
+
+class FileDataEntry(Base):
+    __tablename__ = "file_data_entries"
+    __table_args__ = (
+        UniqueConstraint("file_id", "data_type", name="uq_file_data_file_type"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.id"), nullable=False, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    data_type = Column(String, nullable=False, index=True)
+    encrypted_data = Column(Text, nullable=True)
+    decryption_header = Column(Text, nullable=True)
+    object_id = Column(String, nullable=True)
+    object_size = Column(Integer, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    is_deleted = Column(Boolean, default=False)
+    last_client = Column(String, nullable=True)
+    updated_at_us = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
 class PublicCollectionLink(Base):
     __tablename__ = "public_collection_links"
     id = Column(Integer, primary_key=True)
@@ -130,6 +162,37 @@ class PublicCollectionLink(Base):
     allow_upload = Column(Boolean, default=False)
     password_hash = Column(String, nullable=True)
     expires_at = Column(DateTime, nullable=True)
+    device_limit = Column(Integer, default=0)
+    enable_download = Column(Boolean, default=True)
+    enable_join = Column(Boolean, default=False)
+    enable_collect = Column(Boolean, default=False)
+    nonce = Column(String, nullable=True)
+    mem_limit = Column(Integer, nullable=True)
+    ops_limit = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+
+class CollectionShare(Base):
+    __tablename__ = "collection_shares"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "email", name="uq_collection_share_email"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    collection_id = Column(Integer, ForeignKey("collections.id"), nullable=False, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    sharee_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    email = Column(String, nullable=False)
+    role = Column(String, default="viewer", nullable=False)
+    encrypted_key = Column(Text, nullable=True)
+    key_decryption_nonce = Column(Text, nullable=True)
+    status = Column(String, default="active", nullable=False)
+    magic_metadata_header = Column(Text, nullable=True)
+    magic_metadata_data = Column(Text, nullable=True)
+    magic_metadata_version = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 
 class PublicFileLink(Base):
     __tablename__ = "public_file_links"
@@ -138,6 +201,25 @@ class PublicFileLink(Base):
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
     password_hash = Column(String, nullable=True)
     expires_at = Column(DateTime, nullable=True)
+
+class FileShareLink(Base):
+    __tablename__ = "file_share_links"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    file_id = Column(Integer, ForeignKey("files.id"), nullable=False, index=True)
+    link_id = Column(String, unique=True, nullable=False, index=True)
+    token = Column(String, unique=True, nullable=False, index=True)
+    app = Column(String, default="photos", nullable=False, index=True)
+    device_limit = Column(Integer, default=0)
+    valid_till = Column(DateTime, nullable=True)
+    is_disabled = Column(Boolean, default=False)
+    pass_hash = Column(String, nullable=True)
+    nonce = Column(String, nullable=True)
+    mem_limit = Column(Integer, nullable=True)
+    ops_limit = Column(Integer, nullable=True)
+    enable_download = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 
 class KexRecord(Base):
     __tablename__ = "kex_records"
