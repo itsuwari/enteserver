@@ -5,6 +5,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -41,6 +42,14 @@ def _microseconds_to_dt(value: Optional[int]) -> Optional[dt.datetime]:
     if value in (None, 0):
         return None
     return dt.datetime.utcfromtimestamp(value / 1_000_000)
+
+
+def _dt_to_microseconds(value: Optional[dt.datetime]) -> int:
+    if not value:
+        return 0
+    if value.tzinfo is not None:
+        value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return int(value.timestamp() * 1_000_000)
 
 
 def _collection_to_response(collection: Collection) -> CollectionResponse:
@@ -101,6 +110,165 @@ def _sharees_for_collection(db: Session, collection_id: int) -> ShareesResponse:
         .all()
     )
     return ShareesResponse(sharees=[_share_entry_to_response(db, entry) for entry in entries])
+
+
+def _sharees_payload(db: Session, collection_id: int) -> list[dict]:
+    sharees = _sharees_for_collection(db, collection_id).sharees
+    return [item.model_dump(by_alias=True) for item in sharees]
+
+
+def _magic_metadata_payload(header: Optional[str], data: Optional[str], version: Optional[int], count: Optional[int] = None) -> Optional[dict]:
+    if not header or not data:
+        return None
+    payload: dict[str, object] = {
+        "header": header,
+        "data": data,
+    }
+    if version is not None:
+        payload["version"] = version
+    if count is not None:
+        payload["count"] = count
+    return payload
+
+
+def _collection_attributes_payload(collection: Collection) -> dict:
+    return {
+        "encryptedPath": collection.encrypted_name or "",
+        "pathDecryptionNonce": collection.name_decryption_nonce or "",
+        "version": 1,
+    }
+
+
+def _collection_owner_payload(db: Session, collection: Collection) -> dict:
+    owner = db.get(User, collection.owner_id)
+    return {
+        "id": owner.id if owner else collection.owner_id,
+        "email": owner.email if owner else "",
+        "name": getattr(owner, "name", None),
+        "role": "OWNER",
+    }
+
+
+def _collection_public_urls(db: Session, collection_id: int) -> list[dict]:
+    links = db.query(PublicCollectionLink).filter(PublicCollectionLink.collection_id == collection_id).all()
+    urls: list[dict] = []
+    for link in links:
+        result = _public_link_to_result(link)
+        urls.append(
+            {
+                "url": result.url,
+                "deviceLimit": result.device_limit,
+                "validTill": result.valid_till or 0,
+                "enableDownload": result.enable_download,
+                "enableCollect": result.enable_collect,
+                "passwordEnabled": result.password_enabled,
+                "nonce": result.nonce,
+                "memLimit": result.mem_limit,
+                "opsLimit": result.ops_limit,
+                "enableJoin": result.enable_join,
+            }
+        )
+    return urls
+
+
+def _collection_payload(
+    db: Session,
+    collection: Collection,
+    *,
+    current_user: User,
+    share: CollectionShare | None = None,
+) -> dict:
+    encrypted_key = (share.encrypted_key if share and share.encrypted_key else collection.encrypted_key) or ""
+    key_nonce = (share.key_decryption_nonce if share and share.key_decryption_nonce else collection.key_decryption_nonce) or ""
+
+    magic_metadata = _magic_metadata_payload(
+        collection.magic_metadata_header,
+        collection.magic_metadata_data,
+        collection.magic_metadata_version,
+    )
+    public_magic_metadata = _magic_metadata_payload(
+        collection.pub_magic_metadata_header,
+        collection.pub_magic_metadata_data,
+        collection.pub_magic_metadata_version,
+        getattr(collection, "pub_magic_metadata_count", None),
+    )
+
+    payload: dict[str, object] = {
+        "id": collection.id,
+        "owner": _collection_owner_payload(db, collection),
+        "encryptedKey": encrypted_key,
+        "keyDecryptionNonce": key_nonce,
+        "name": collection.name or "",
+        "encryptedName": collection.encrypted_name or "",
+        "nameDecryptionNonce": collection.name_decryption_nonce or "",
+        "type": collection.collection_type or "album",
+        "attributes": _collection_attributes_payload(collection),
+        "sharees": _sharees_payload(db, collection.id),
+        "publicURLs": _collection_public_urls(db, collection.id),
+        "updationTime": _dt_to_microseconds(collection.updated_at or collection.created_at),
+        "isDeleted": False,
+        "magicMetadata": magic_metadata,
+        "app": "photos",
+        "pubMagicMetadata": public_magic_metadata,
+        "sharedMagicMetadata": None,
+    }
+    return payload
+
+
+def _file_attributes_payload(
+    object_key: Optional[str],
+    decryption_header: Optional[str],
+    encrypted_data: Optional[str] = "",
+    size: Optional[int] = None,
+) -> dict:
+    return {
+        "objectKey": object_key or "",
+        "decryptionHeader": decryption_header or "",
+        "encryptedData": encrypted_data or "",
+        "size": size or 0,
+    }
+
+
+def _file_diff_payload(file: File, collection: Collection) -> dict:
+    magic_metadata = _magic_metadata_payload(
+        file.magic_metadata_header,
+        file.magic_metadata_data,
+        file.magic_metadata_version,
+    )
+    pub_magic_metadata = _magic_metadata_payload(
+        file.pub_magic_metadata_header,
+        file.pub_magic_metadata_data,
+        file.pub_magic_metadata_version,
+        getattr(file, "pub_magic_metadata_count", None),
+    )
+    info_payload = {
+        "fileSize": file.size or 0,
+        "thumbSize": 0,
+    }
+    is_deleted = bool(file.is_trashed or file.collection_id != collection.id)
+    return {
+        "id": file.id,
+        "ownerID": file.owner_id,
+        "collectionID": collection.id,
+        "collectionOwnerID": collection.owner_id,
+        "encryptedKey": file.encrypted_key or "",
+        "keyDecryptionNonce": file.key_decryption_nonce or "",
+        "file": _file_attributes_payload(file.file_object_key, getattr(file, "file_nonce", None), size=file.size),
+        "thumbnail": _file_attributes_payload(file.thumbnail_object_key, getattr(file, "thumbnail_nonce", None)),
+        "metadata": _file_attributes_payload(
+            None,
+            file.metadata_header,
+            encrypted_data=file.metadata_encrypted_data or "",
+        ),
+        "info": info_payload,
+        "isDeleted": is_deleted,
+        "updationTime": _dt_to_microseconds(file.updated_at or file.created_at),
+        "magicMetadata": magic_metadata,
+        "pubMagicMetadata": pub_magic_metadata,
+    }
+
+
+COLLECTION_DIFF_LIMIT = 2500
 
 
 def _ensure_public_link(db: Session, collection_id: int) -> PublicCollectionLink:
@@ -184,16 +352,16 @@ def list_collections(
     return [_collection_to_response(row) for row in rows]
 
 
-@router.get("/{collection_id}", response_model=CollectionResponse)
-def get_collection(
-    collection_id: int,
+@router.get("/sharees", response_model=ShareesResponse)
+def get_sharees(
+    collection_id: int = Query(..., alias="collectionID"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     collection = db.get(Collection, collection_id)
-    if not collection or not _user_has_access(db, collection, current_user):
+    if not collection or collection.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Collection not found")
-    return _collection_to_response(collection)
+    return _sharees_for_collection(db, collection.id)
 
 
 @router.get("/v2")
@@ -218,6 +386,111 @@ def list_collections_delta(
     ]
     next_since = max([item["updatedAtUs"] for item in items], default=server_time_us)
     return {"serverTime": server_time_us, "nextSince": next_since, "collections": items}
+
+
+@router.get("/v3")
+def list_collections_v3(
+    sinceTime: int = Query(0, ge=0),
+    sharedSinceTime: int = Query(0, ge=0),
+    limit: int = Query(1000, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owned_since_dt = _microseconds_to_dt(sinceTime)
+    shared_since_dt = _microseconds_to_dt(sharedSinceTime)
+
+    owned_query = db.query(Collection).filter(Collection.owner_id == current_user.id)
+    if owned_since_dt:
+        owned_query = owned_query.filter(Collection.updated_at >= owned_since_dt)
+    owned_query = owned_query.order_by(Collection.updated_at.asc(), Collection.id.asc())
+    owned_rows = owned_query.limit(limit).all() if limit else owned_query.all()
+
+    owned_payloads = [
+        _collection_payload(db, row, current_user=current_user, share=None) for row in owned_rows
+    ]
+
+    shared_query = (
+        db.query(CollectionShare, Collection)
+        .join(Collection, Collection.id == CollectionShare.collection_id)
+        .filter(CollectionShare.status == "active")
+        .filter(
+            or_(
+                CollectionShare.sharee_user_id == current_user.id,
+                and_(CollectionShare.sharee_user_id.is_(None), CollectionShare.email == current_user.email),
+            )
+        )
+        .filter(Collection.owner_id != current_user.id)
+    )
+    if shared_since_dt:
+        shared_query = shared_query.filter(CollectionShare.updated_at >= shared_since_dt)
+    shared_query = shared_query.order_by(CollectionShare.updated_at.asc(), CollectionShare.id.asc())
+    shared_rows = shared_query.limit(limit).all() if limit else shared_query.all()
+
+    shared_payloads = [
+        _collection_payload(db, collection, current_user=current_user, share=share) for share, collection in shared_rows
+    ]
+
+    return {"owned": owned_payloads, "shared": shared_payloads}
+
+
+@router.get("/v2/diff")
+def collection_diff_v2(
+    collection_id: int = Query(..., alias="collectionID"),
+    sinceTime: int = Query(0, ge=0),
+    limit: int = Query(COLLECTION_DIFF_LIMIT, ge=1, le=COLLECTION_DIFF_LIMIT),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    collection = db.get(Collection, collection_id)
+    if not collection or not _user_has_access(db, collection, current_user):
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    since_dt = _microseconds_to_dt(sinceTime)
+    query = db.query(File).filter(File.collection_id == collection.id)
+    if since_dt:
+        query = query.filter(File.updated_at >= since_dt)
+    query = query.order_by(File.updated_at.asc(), File.id.asc())
+
+    files = query.all()
+    diff_entries = [_file_diff_payload(file, collection) for file in files]
+    if sinceTime:
+        diff_entries = [entry for entry in diff_entries if entry["updationTime"] > sinceTime]
+    has_more = len(diff_entries) > limit
+    if has_more:
+        diff_entries = diff_entries[:limit]
+    return {"diff": diff_entries, "hasMore": has_more}
+
+
+@router.get("/file")
+def get_collection_file(
+    collection_id: int = Query(..., alias="collectionID"),
+    file_id: int = Query(..., alias="fileID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    collection = db.get(Collection, collection_id)
+    if not collection or not _user_has_access(db, collection, current_user):
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    file = db.get(File, file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file.collection_id != collection.id and not file.is_trashed:
+        raise HTTPException(status_code=404, detail="File not in collection")
+    payload = _file_diff_payload(file, collection)
+    return {"file": payload}
+
+
+@router.get("/{collection_id}", response_model=CollectionResponse)
+def get_collection(
+    collection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    collection = db.get(Collection, collection_id)
+    if not collection or not _user_has_access(db, collection, current_user):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return _collection_to_response(collection)
 
 
 @router.post("/share", response_model=ShareesResponse)
@@ -275,18 +548,6 @@ def unshare_collection(
     if share:
         db.delete(share)
         db.commit()
-    return _sharees_for_collection(db, collection.id)
-
-
-@router.get("/sharees", response_model=ShareesResponse)
-def get_sharees(
-    collection_id: int = Query(..., alias="collectionID"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    collection = db.get(Collection, collection_id)
-    if not collection or collection.owner_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Collection not found")
     return _sharees_for_collection(db, collection.id)
 
 
