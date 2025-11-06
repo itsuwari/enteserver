@@ -76,11 +76,13 @@ class Collection(Base):
     magic_metadata_header = Column(Text, nullable=True)
     magic_metadata_data = Column(Text, nullable=True)
     magic_metadata_version = Column(Integer, nullable=True)
+    magic_metadata_count = Column(Integer, nullable=True)
     
     # Public magic metadata
     pub_magic_metadata_header = Column(Text, nullable=True)
     pub_magic_metadata_data = Column(Text, nullable=True)
     pub_magic_metadata_version = Column(Integer, nullable=True)
+    pub_magic_metadata_count = Column(Integer, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, default=dt.datetime.utcnow)
@@ -104,6 +106,8 @@ class File(Base):
     magic_metadata_header = Column(Text, nullable=True)
     magic_metadata_data = Column(Text, nullable=True)
     magic_metadata_version = Column(Integer, nullable=True)
+    magic_metadata_count = Column(Integer, nullable=True)
+    thumbnail_size = Column(Integer, nullable=True)
     
     # Public magic metadata for shared collections
     pub_magic_metadata_header = Column(Text, nullable=True)
@@ -191,6 +195,7 @@ class CollectionShare(Base):
     magic_metadata_header = Column(Text, nullable=True)
     magic_metadata_data = Column(Text, nullable=True)
     magic_metadata_version = Column(Integer, nullable=True)
+    magic_metadata_count = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=dt.datetime.utcnow)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 

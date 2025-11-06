@@ -5,7 +5,7 @@ from .db import Base, engine
 from .routers.auth import router as auth_router
 from .routers.files import router as files_router
 from .routers.collections import router as collections_router
-from .routers.public_links import public_router, public_collection_router
+from .routers.public_links import public_router, public_collection_router, file_link_router
 from .routers.kex import router as kex_router
 from .routers.albums_redirect import router as albums_redirect_router
 from .routers.trash import router as trash_router
@@ -23,6 +23,7 @@ app.include_router(files_router)
 app.include_router(collections_router)
 app.include_router(public_router)
 app.include_router(public_collection_router)
+app.include_router(file_link_router)
 app.include_router(kex_router)
 app.include_router(albums_redirect_router)
 app.include_router(trash_router)

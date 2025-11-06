@@ -185,12 +185,13 @@ def _collection_payload(
         collection.magic_metadata_header,
         collection.magic_metadata_data,
         collection.magic_metadata_version,
+        collection.magic_metadata_count,
     )
     public_magic_metadata = _magic_metadata_payload(
         collection.pub_magic_metadata_header,
         collection.pub_magic_metadata_data,
         collection.pub_magic_metadata_version,
-        getattr(collection, "pub_magic_metadata_count", None),
+        collection.pub_magic_metadata_count,
     )
 
     payload: dict[str, object] = {
@@ -234,16 +235,17 @@ def _file_diff_payload(file: File, collection: Collection) -> dict:
         file.magic_metadata_header,
         file.magic_metadata_data,
         file.magic_metadata_version,
+        file.magic_metadata_count,
     )
     pub_magic_metadata = _magic_metadata_payload(
         file.pub_magic_metadata_header,
         file.pub_magic_metadata_data,
         file.pub_magic_metadata_version,
-        getattr(file, "pub_magic_metadata_count", None),
+        file.pub_magic_metadata_count,
     )
     info_payload = {
         "fileSize": file.size or 0,
-        "thumbSize": 0,
+        "thumbSize": file.thumbnail_size or 0,
     }
     is_deleted = bool(file.is_trashed or file.collection_id != collection.id)
     return {
@@ -254,7 +256,11 @@ def _file_diff_payload(file: File, collection: Collection) -> dict:
         "encryptedKey": file.encrypted_key or "",
         "keyDecryptionNonce": file.key_decryption_nonce or "",
         "file": _file_attributes_payload(file.file_object_key, getattr(file, "file_nonce", None), size=file.size),
-        "thumbnail": _file_attributes_payload(file.thumbnail_object_key, getattr(file, "thumbnail_nonce", None)),
+        "thumbnail": _file_attributes_payload(
+            file.thumbnail_object_key,
+            getattr(file, "thumbnail_nonce", None),
+            size=file.thumbnail_size,
+        ),
         "metadata": _file_attributes_payload(
             None,
             file.metadata_header,
@@ -310,6 +316,30 @@ def _public_link_to_result(link: PublicCollectionLink) -> CollectionShareURLResu
         mem_limit=link.mem_limit,
         ops_limit=link.ops_limit,
     )
+
+
+def _validate_collection_magic_metadata(entity, metadata, *, public: bool, skip_checks: bool = False) -> None:
+    if metadata.version is None:
+        raise HTTPException(status_code=400, detail="magicMetadata.version is required")
+    if metadata.count is None:
+        raise HTTPException(status_code=400, detail="magicMetadata.count is required")
+    if metadata.count < 0:
+        raise HTTPException(status_code=400, detail="magicMetadata.count must be >= 0")
+
+    if skip_checks:
+        return
+
+    existing_version = (
+        entity.pub_magic_metadata_version if public else entity.magic_metadata_version
+    )
+    if existing_version is not None and metadata.version != existing_version:
+        raise HTTPException(status_code=409, detail="STALE_VERSION")
+
+    existing_count = (
+        entity.pub_magic_metadata_count if public else entity.magic_metadata_count
+    )
+    if existing_count is not None and existing_count - metadata.count > 2:
+        raise HTTPException(status_code=409, detail="COUNT_REGRESSION")
 
 
 def _parse_since_time(since: Optional[str]) -> dt.datetime:
@@ -680,9 +710,12 @@ def update_collection_magic_metadata(
     current_user: User = Depends(get_current_user),
 ):
     collection = _get_owned_collection(db, payload.id, current_user)
+    _validate_collection_magic_metadata(collection, payload.magic_metadata, public=False)
+    new_version = (payload.magic_metadata.version or 0) + 1
     collection.magic_metadata_header = payload.magic_metadata.header
     collection.magic_metadata_data = payload.magic_metadata.data
-    collection.magic_metadata_version = payload.magic_metadata.version
+    collection.magic_metadata_version = new_version
+    collection.magic_metadata_count = payload.magic_metadata.count
     collection.updated_at = dt.datetime.utcnow()
     db.commit()
     return {"updated": True}
@@ -695,9 +728,12 @@ def update_collection_public_magic_metadata(
     current_user: User = Depends(get_current_user),
 ):
     collection = _get_owned_collection(db, payload.id, current_user)
+    _validate_collection_magic_metadata(collection, payload.magic_metadata, public=True)
+    new_version = (payload.magic_metadata.version or 0) + 1
     collection.pub_magic_metadata_header = payload.magic_metadata.header
     collection.pub_magic_metadata_data = payload.magic_metadata.data
-    collection.pub_magic_metadata_version = payload.magic_metadata.version
+    collection.pub_magic_metadata_version = new_version
+    collection.pub_magic_metadata_count = payload.magic_metadata.count
     collection.updated_at = dt.datetime.utcnow()
     db.commit()
     return {"updated": True}
@@ -720,9 +756,12 @@ def update_collection_sharee_magic_metadata(
     )
     if not share:
         raise HTTPException(status_code=404, detail="Share not found")
+    _validate_collection_magic_metadata(share, payload.magic_metadata, public=False)
+    new_version = (payload.magic_metadata.version or 0) + 1
     share.magic_metadata_header = payload.magic_metadata.header
     share.magic_metadata_data = payload.magic_metadata.data
-    share.magic_metadata_version = payload.magic_metadata.version
+    share.magic_metadata_version = new_version
+    share.magic_metadata_count = payload.magic_metadata.count
     share.updated_at = dt.datetime.utcnow()
     db.commit()
     return {"updated": True}

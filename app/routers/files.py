@@ -113,6 +113,52 @@ def _share_link_to_response(link: FileShareLink, app_name: str | None = None) ->
         created_at=_dt_to_microseconds(link.created_at),
     )
 
+
+def _prepare_magic_metadata_updates(
+    db: Session,
+    user: User,
+    items: list,
+    *,
+    public: bool,
+    skip_checks: bool,
+):
+    files: dict[int, File] = {}
+    for item in items:
+        metadata = getattr(item, "magic_metadata", None)
+        if not metadata:
+            continue
+        if metadata.version is None:
+            raise HTTPException(status_code=400, detail="magicMetadata.version is required")
+        if metadata.count is None:
+            raise HTTPException(status_code=400, detail="magicMetadata.count is required")
+        if metadata.count is not None and metadata.count < 0:
+            raise HTTPException(status_code=400, detail="magicMetadata.count must be >= 0")
+
+        file = db.get(File, item.file_id)
+        if not file:
+            raise HTTPException(status_code=404, detail=f"File {item.file_id} not found")
+        if file.owner_id != user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to update this file")
+
+        if not skip_checks:
+            existing_version = (
+                file.pub_magic_metadata_version if public else file.magic_metadata_version
+            )
+            if existing_version is not None and metadata.version != existing_version:
+                raise HTTPException(status_code=409, detail="STALE_VERSION")
+            existing_count = (
+                file.pub_magic_metadata_count if public else file.magic_metadata_count
+            )
+            if (
+                existing_count is not None
+                and metadata.count is not None
+                and existing_count - metadata.count > 2
+            ):
+                raise HTTPException(status_code=409, detail="COUNT_REGRESSION")
+
+        files[item.file_id] = file
+    return files
+
 @router.get("/upload-urls", response_model=UploadURLResponse)
 def get_upload_urls(
     request: Request,
@@ -157,6 +203,7 @@ def create_meta_file(
         magic_metadata_header=payload.magic_metadata.header if payload.magic_metadata else None,
         magic_metadata_data=payload.magic_metadata.data if payload.magic_metadata else None,
         magic_metadata_version=payload.magic_metadata.version if payload.magic_metadata else None,
+        magic_metadata_count=payload.magic_metadata.count if payload.magic_metadata else None,
         pub_magic_metadata_header=payload.pub_magic_metadata.header if payload.pub_magic_metadata else None,
         pub_magic_metadata_data=payload.pub_magic_metadata.data if payload.pub_magic_metadata else None,
         pub_magic_metadata_version=payload.pub_magic_metadata.version if payload.pub_magic_metadata else None,
@@ -202,6 +249,7 @@ def copy_files(
             collection_id=payload.dst_collection_id,
             file_object_key=original.file_object_key,
             thumbnail_object_key=original.thumbnail_object_key,
+            thumbnail_size=original.thumbnail_size,
             encrypted_key=file_item.encrypted_key,
             key_decryption_nonce=file_item.key_decryption_nonce,
             metadata_header=original.metadata_header,
@@ -209,6 +257,7 @@ def copy_files(
             magic_metadata_header=original.magic_metadata_header,
             magic_metadata_data=original.magic_metadata_data,
             magic_metadata_version=original.magic_metadata_version,
+            magic_metadata_count=original.magic_metadata_count,
             pub_magic_metadata_header=original.pub_magic_metadata_header,
             pub_magic_metadata_data=original.pub_magic_metadata_data,
             pub_magic_metadata_version=original.pub_magic_metadata_version,
@@ -533,6 +582,14 @@ def create_or_update_file(payload: FileCreate, db: Session = Depends(get_db), cu
     size, _ = _head_size_and_etag(payload.file.object_key)
     if size is None:
         raise HTTPException(status_code=400, detail="Object not found or inaccessible in S3")
+
+    thumbnail_object_key = payload.thumbnail.object_key if payload.thumbnail else None
+    thumbnail_size = None
+    if thumbnail_object_key:
+        try:
+            thumbnail_size, _ = _head_size_and_etag(thumbnail_object_key)
+        except Exception:
+            thumbnail_size = None
     
     # Enforce storage quota before creating file
     try:
@@ -550,18 +607,38 @@ def create_or_update_file(payload: FileCreate, db: Session = Depends(get_db), cu
             }
         )
     
+    magic_md = payload.magic_metadata
+    pub_md = payload.pub_magic_metadata
+
+    magic_header = magic_md.header if magic_md else (pub_md.header if pub_md else None)
+    magic_data = magic_md.data if magic_md else (pub_md.data if pub_md else None)
+    magic_version = magic_md.version if magic_md else (pub_md.version if pub_md else None)
+    magic_count = magic_md.count if magic_md else (pub_md.count if pub_md else None)
+
+    pub_header = pub_md.header if pub_md else None
+    pub_data = pub_md.data if pub_md else None
+    pub_version = pub_md.version if pub_md else None
+    pub_count = pub_md.count if pub_md else None
+
     mime_type = payload.mime_type or mimetypes.guess_type(payload.original_filename or "")[0]
     f = File(
         owner_id=current_user.id,
         collection_id=payload.collection_id,
         file_object_key=payload.file.object_key,
-        thumbnail_object_key=payload.thumbnail.object_key if payload.thumbnail else None,
+        thumbnail_object_key=thumbnail_object_key,
+        thumbnail_size=thumbnail_size,
         encrypted_key=payload.encrypted_key,
         key_decryption_nonce=payload.key_decryption_nonce,
         metadata_header=payload.metadata.decryption_header if payload.metadata else None,
         metadata_encrypted_data=payload.metadata.encrypted_data if payload.metadata else None,
-        magic_metadata_header=(payload.magic_metadata.header if payload.magic_metadata else (payload.pub_magic_metadata.header if payload.pub_magic_metadata else None)),
-        magic_metadata_data=(payload.magic_metadata.data if payload.magic_metadata else (payload.pub_magic_metadata.data if payload.pub_magic_metadata else None)),
+        magic_metadata_header=magic_header,
+        magic_metadata_data=magic_data,
+        magic_metadata_version=magic_version,
+        magic_metadata_count=magic_count,
+        pub_magic_metadata_header=pub_header,
+        pub_magic_metadata_data=pub_data,
+        pub_magic_metadata_version=pub_version,
+        pub_magic_metadata_count=pub_count,
         mime_type=mime_type,
         original_filename=payload.original_filename,
         size=size,
@@ -598,12 +675,15 @@ def update_file(payload: FileUpdate, db: Session = Depends(get_db), current_user
         if ts is None:
             raise HTTPException(status_code=400, detail="thumbnail object not found in S3")
         f.thumbnail_object_key = payload.thumbnail.object_key
+        f.thumbnail_size = ts
     if payload.metadata:
         f.metadata_header = payload.metadata.decryption_header
         f.metadata_encrypted_data = payload.metadata.encrypted_data
     if payload.magic_metadata:
         f.magic_metadata_header = payload.magic_metadata.header
         f.magic_metadata_data = payload.magic_metadata.data
+        f.magic_metadata_version = payload.magic_metadata.version
+        f.magic_metadata_count = payload.magic_metadata.count
     if payload.original_filename is not None:
         f.original_filename = payload.original_filename
     if payload.mime_type is not None:
@@ -624,6 +704,19 @@ def download_file(file_id: int, request: Request, db: Session = Depends(get_db),
         return RedirectResponse(url=redirect_url, status_code=307)
     raise HTTPException(status_code=501, detail="Object storage disabled")
 
+@router.get("/download/v2/{file_id}")
+def download_file_v2(file_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    f = db.get(File, file_id)
+    if not f or f.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not object_storage_available():
+        raise HTTPException(status_code=501, detail="Object storage disabled")
+    url = _absolute_presign(
+        presign_get(f.file_object_key, response_filename=f.original_filename or f"file_{f.id}"),
+        request,
+    )
+    return {"url": url}
+
 @router.get("/preview/{file_id}", response_model=None)
 def preview_file(file_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     f = db.get(File, file_id)
@@ -636,6 +729,62 @@ def preview_file(file_id: int, request: Request, db: Session = Depends(get_db), 
         )
         return RedirectResponse(url=redirect_url, status_code=307)
     raise HTTPException(status_code=501, detail="Object storage disabled")
+
+@router.get("/preview/v2/{file_id}")
+def preview_file_v2(file_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    f = db.get(File, file_id)
+    if not f or f.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not object_storage_available():
+        raise HTTPException(status_code=501, detail="Object storage disabled")
+    object_key = f.thumbnail_object_key or f.file_object_key
+    url = _absolute_presign(presign_get(object_key), request)
+    return {"url": url}
+
+@router.get("/large-thumbnails")
+def get_large_thumbnails(
+    threshold: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result_ids = {
+        fid
+        for (fid,) in (
+            db.query(File.id)
+            .filter(
+                File.owner_id == current_user.id,
+                File.thumbnail_object_key.isnot(None),
+                File.thumbnail_size.isnot(None),
+                File.thumbnail_size >= threshold,
+            )
+            .all()
+        )
+    }
+
+    missing_sizes = (
+        db.query(File)
+        .filter(
+            File.owner_id == current_user.id,
+            File.thumbnail_object_key.isnot(None),
+            File.thumbnail_size.is_(None),
+        )
+        .all()
+    )
+    updated = False
+    for file in missing_sizes:
+        try:
+            size, _ = _head_size_and_etag(file.thumbnail_object_key)
+        except Exception:
+            size = None
+        file.thumbnail_size = size
+        if size is not None and size >= threshold:
+            result_ids.add(file.id)
+        updated = True
+
+    if updated:
+        db.commit()
+
+    return {"largeThumbnailFiles": sorted(result_ids)}
 
 @router.post("/size", response_model=SizeResponse)
 def files_size(payload: FileIDsRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -667,6 +816,7 @@ def update_thumbnail(payload: UpdateThumbnailRequest, db: Session = Depends(get_
     if ts is None:
         raise HTTPException(status_code=400, detail="thumbnail object not found in object storage")
     f.thumbnail_object_key = payload.object_key
+    f.thumbnail_size = ts
     db.commit()
     return {"fileId": f.id, "thumbnailObjectKey": f.thumbnail_object_key}
 
@@ -805,14 +955,62 @@ def list_file_share_urls(
 
 @router.put("/magic-metadata")
 def update_magic_metadata(payload: UpdateMultipleMagicMetadataRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    skip_checks = bool(payload.skip_version)
+    file_map = _prepare_magic_metadata_updates(
+        db,
+        current_user,
+        payload.items,
+        public=False,
+        skip_checks=skip_checks,
+    )
     updated = 0
+    now = dt.datetime.utcnow()
     for item in payload.items:
-        f = db.get(File, item.file_id)
-        if f and f.owner_id == current_user.id:
-            f.magic_metadata_header = item.magic_metadata.header
-            f.magic_metadata_data = item.magic_metadata.data
-            updated += 1
-    db.commit()
+        metadata = item.magic_metadata
+        if not metadata:
+            continue
+        file = file_map.get(item.file_id)
+        if not file:
+            continue
+        new_version = (metadata.version or 0) + 1
+        file.magic_metadata_header = metadata.header
+        file.magic_metadata_data = metadata.data
+        file.magic_metadata_version = new_version
+        file.magic_metadata_count = metadata.count
+        file.updated_at = now
+        updated += 1
+    if updated:
+        db.commit()
+    return {"updated": updated}
+
+@router.put("/public-magic-metadata")
+def update_public_magic_metadata(payload: UpdateMultipleMagicMetadataRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    skip_checks = bool(payload.skip_version)
+    file_map = _prepare_magic_metadata_updates(
+        db,
+        current_user,
+        payload.items,
+        public=True,
+        skip_checks=skip_checks,
+    )
+    updated = 0
+    now = dt.datetime.utcnow()
+    for item in payload.items:
+        metadata = item.magic_metadata
+        if not metadata:
+            continue
+        file = file_map.get(item.file_id)
+        if not file:
+            continue
+        new_version = (metadata.version or 0) + 1
+        file.pub_magic_metadata_header = metadata.header
+        file.pub_magic_metadata_data = metadata.data
+        file.pub_magic_metadata_version = new_version
+        file.pub_magic_metadata_count = metadata.count
+        file.updated_at = now
+        updated += 1
+    if updated:
+        db.commit()
     return {"updated": updated}
 
 @router.get("/count")

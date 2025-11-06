@@ -141,6 +141,38 @@ def test_resolve_presigned_url_uses_request_host(tmp_path):
     assert "expires=" in resolved and "signature=" in resolved
 
 
+def test_local_s3_generate_presigned_defaults(tmp_path):
+    from app.local_s3 import LocalS3Client
+
+    client = LocalS3Client(name="local", base_path=str(tmp_path), secret="secret")
+    url = client.generate_presigned_url("list_objects_v2", Params={"Bucket": "ignored"})
+    assert url.startswith("/local-storage/local/") or url.startswith("http")
+    assert "signature=" in url
+
+
+def test_local_s3_list_objects_v2(tmp_path):
+    from app.local_s3 import LocalS3Client
+
+    client = LocalS3Client(name="local", base_path=str(tmp_path), secret="secret")
+    client.save_object("photos/1.jpg", [b"a"])
+    client.save_object("photos/2.jpg", [b"b"])
+    client.save_object("docs/readme.txt", [b"c"])
+
+    first_page = client.list_objects_v2(Bucket="bucket", MaxKeys=2)
+    assert first_page["KeyCount"] == 2
+    assert first_page["IsTruncated"] is True
+    assert {obj["Key"] for obj in first_page["Contents"]} <= {"photos/1.jpg", "photos/2.jpg", "docs/readme.txt"}
+    token = first_page["NextContinuationToken"]
+
+    second_page = client.list_objects_v2(Bucket="bucket", ContinuationToken=token)
+    assert second_page["KeyCount"] == 1
+    assert second_page["IsTruncated"] is False
+
+    prefix_page = client.list_objects_v2(Bucket="bucket", Prefix="photos/")
+    keys = {obj["Key"] for obj in prefix_page["Contents"]}
+    assert keys == {"photos/1.jpg", "photos/2.jpg"}
+
+
 def test_chunked_remote_copy_retries(tmp_path):
     from app.local_s3 import LocalS3Client
     from app.s3 import MultiCloudS3

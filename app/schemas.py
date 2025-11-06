@@ -179,6 +179,7 @@ class MagicMetadata(CamelModel):
     header: str | None = None
     data: str | None = None
     version: int | None = None
+    count: int | None = None
 
 class PubMagicMetadata(CamelModel):
     version: int | None = None
@@ -347,10 +348,11 @@ class UpdateThumbnailRequest(CamelModel):
 
 class UpdateMultipleMagicMetadataItem(CamelModel):
     file_id: int = Field(alias="fileId")
-    magic_metadata: MagicMetadata = Field(alias="magicMetadata")
+    magic_metadata: MagicMetadata | None = Field(default=None, alias="magicMetadata")
 
 class UpdateMultipleMagicMetadataRequest(CamelModel):
-    items: list[UpdateMultipleMagicMetadataItem]
+    items: list[UpdateMultipleMagicMetadataItem] = Field(default_factory=list, alias="metadataList")
+    skip_version: bool | None = Field(default=None, alias="skipVersion")
 
 class FileShareCreateRequest(CamelModel):
     file_id: int = Field(alias="fileID")

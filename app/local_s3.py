@@ -109,25 +109,94 @@ class LocalS3Client:
         self,
         operation_name: str,
         *,
-        Params: Dict[str, object],
-        ExpiresIn: int,
-        HttpMethod: str,
+        Params: Dict[str, object] | None = None,
+        ExpiresIn: int | None = None,
+        HttpMethod: str | None = None,
     ) -> str:
-        key_value = Params.get("Key") if Params else None
+        params_dict = Params or {}
+        key_value = params_dict.get("Key")
         key = str(key_value) if key_value is not None else f"{self.name}/health"
-        expires = int(time.time()) + int(ExpiresIn)
+        expires_in = 3600 if ExpiresIn is None else int(ExpiresIn)
+        http_method = "GET" if HttpMethod is None else HttpMethod
+        expires = int(time.time()) + expires_in
         extra: Dict[str, str] = {}
 
         if operation_name == "upload_part":
-            extra["uploadId"] = str(Params["UploadId"])
-            extra["partNumber"] = str(Params["PartNumber"])
+            extra["uploadId"] = str(params_dict["UploadId"])
+            extra["partNumber"] = str(params_dict["PartNumber"])
         elif operation_name == "get_object":
-            if "ResponseContentDisposition" in Params:
-                extra["response-content-disposition"] = str(Params["ResponseContentDisposition"])
+            if "ResponseContentDisposition" in params_dict:
+                extra["response-content-disposition"] = str(params_dict["ResponseContentDisposition"])
         params = dict(extra)
         params["expires"] = str(expires)
-        params["signature"] = self._sign(HttpMethod, key, expires, extra)
+        params["signature"] = self._sign(http_method, key, expires, extra)
         return self._build_url(key, expires, params)
+
+    def list_objects_v2(
+        self,
+        *,
+        Bucket: str | None = None,
+        Prefix: str | None = None,
+        ContinuationToken: str | None = None,
+        MaxKeys: int = 1000,
+    ) -> Dict[str, object]:
+        prefix = self._normalize_key(Prefix or "")
+        normalized_prefix = prefix if not prefix or prefix.endswith("/") else prefix
+
+        def _should_skip(path: Path) -> bool:
+            with suppress(ValueError):
+                rel_parts = path.relative_to(self.base_path).parts
+                if rel_parts and rel_parts[0] == ".multipart":
+                    return True
+            return False
+
+        keys: list[str] = []
+        for path in sorted(self.base_path.rglob("*")):
+            if not path.is_file() or _should_skip(path):
+                continue
+            rel_key = path.relative_to(self.base_path).as_posix()
+            if normalized_prefix and not rel_key.startswith(normalized_prefix):
+                continue
+            keys.append(rel_key)
+
+        start_index = 0
+        if ContinuationToken:
+            with suppress(ValueError):
+                start_index = keys.index(ContinuationToken) + 1
+
+        max_keys = max(1, int(MaxKeys))
+        window = keys[start_index : start_index + max_keys]
+        is_truncated = start_index + max_keys < len(keys)
+        next_token = window[-1] if is_truncated and window else None
+
+        contents = []
+        for key in window:
+            path = self.base_path / key
+            stat = path.stat()
+            contents.append(
+                {
+                    "Key": key,
+                    "Size": stat.st_size,
+                    "ETag": self._compute_etag(path),
+                    "LastModified": time.strftime(
+                        "%a, %d %b %Y %H:%M:%S GMT", time.gmtime(stat.st_mtime)
+                    ),
+                    "StorageClass": "STANDARD",
+                }
+            )
+
+        response: Dict[str, object] = {
+            "Bucket": Bucket,
+            "KeyCount": len(window),
+            "MaxKeys": max_keys,
+            "IsTruncated": is_truncated,
+            "Contents": contents,
+        }
+        if normalized_prefix:
+            response["Prefix"] = normalized_prefix
+        if is_truncated and next_token:
+            response["NextContinuationToken"] = next_token
+        return response
 
     # ------------------------------------------------------------------
     # Multipart upload helpers
@@ -272,4 +341,3 @@ class LocalS3Client:
 
     def get_existing_path(self, key: str) -> Path:
         return self._existing_object_path(key)
-
